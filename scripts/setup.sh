@@ -148,18 +148,18 @@ setup_ssh_access() {
     
     # Copy SSH key to VMs using multipass first
     print_status "Copying SSH key to master node..."
-    /snap/bin/multipass exec k3s-master -- mkdir -p /home/ubuntu/.ssh
-    cat ~/.ssh/id_rsa.pub | /snap/bin/multipass exec k3s-master -- tee -a /home/ubuntu/.ssh/authorized_keys
+    multipass exec k3s-master -- mkdir -p /home/ubuntu/.ssh
+    cat ~/.ssh/id_rsa.pub | multipass exec k3s-master -- tee -a /home/ubuntu/.ssh/authorized_keys
     
     print_status "Copying SSH key to worker node..."
-    /snap/bin/multipass exec k3s-worker -- mkdir -p /home/ubuntu/.ssh
-    cat ~/.ssh/id_rsa.pub | /snap/bin/multipass exec k3s-worker -- tee -a /home/ubuntu/.ssh/authorized_keys
+    multipass exec k3s-worker -- mkdir -p /home/ubuntu/.ssh
+    cat ~/.ssh/id_rsa.pub | multipass exec k3s-worker -- tee -a /home/ubuntu/.ssh/authorized_keys
     
     # Set proper permissions
-    /snap/bin/multipass exec k3s-master -- chmod 700 /home/ubuntu/.ssh
-    /snap/bin/multipass exec k3s-master -- chmod 600 /home/ubuntu/.ssh/authorized_keys
-    /snap/bin/multipass exec k3s-worker -- chmod 700 /home/ubuntu/.ssh
-    /snap/bin/multipass exec k3s-worker -- chmod 600 /home/ubuntu/.ssh/authorized_keys
+    multipass exec k3s-master -- chmod 700 /home/ubuntu/.ssh
+    multipass exec k3s-master -- chmod 600 /home/ubuntu/.ssh/authorized_keys
+    multipass exec k3s-worker -- chmod 700 /home/ubuntu/.ssh
+    multipass exec k3s-worker -- chmod 600 /home/ubuntu/.ssh/authorized_keys
     
     print_status "SSH access configured!"
 }
