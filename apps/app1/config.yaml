@@ -1,0 +1,14 @@
+# App1 Configuration
+# This file should contain ConfigMap or Secret configurations for App1
+#
+# Example structure:
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: app1-config
+# data:
+#   APP_NAME: "Your App1 Name"
+#   APP_VERSION: "1.0.0"
+#   ENVIRONMENT: "development"
+#
+# Add your App1 configuration here 
