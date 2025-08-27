@@ -25,6 +25,15 @@
 - **Project Structure**: ✅ Clean, organized directory layout
 - **Troubleshooting Guide**: ✅ Common issues and solutions documented
 
+### Task Management Backend API
+
+- **Rust + Axum framework**: ✅ Backend built with Rust using Axum
+- **PostgreSQL + SQLx**: ✅ Database integration with async queries
+- **JWT authentication**: ✅ Secure user sessions with token-based auth
+- **Docker & Docker Compose**: ✅ Containerized development & deployment
+- **Swagger UI**: ✅ Interactive API documentation
+- **User management endpoints**: ✅ Registration, login, and profile handling
+- **Task management endpoints**: ✅ CRUD operations for tasks
 ## 🔄 Current Status
 
 ### Working Components

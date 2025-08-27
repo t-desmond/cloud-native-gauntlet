@@ -1,0 +1,42 @@
+# Build stage
+FROM rust:1.85 AS builder
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY migrations ./migrations
+
+# Install sqlx-cli in builder
+RUN cargo install sqlx-cli --no-default-features --features native-tls,postgres
+
+# Build the application
+RUN cargo build --release
+
+
+# Runtime stage
+FROM debian:bookworm-slim AS runtime
+
+# Install required libraries
+RUN apt-get update && apt-get install -y \
+    libssl3 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Create app user
+RUN useradd -m -s /bin/bash appuser
+
+WORKDIR /app
+
+# Copy binary and sqlx-cli from builder
+COPY --from=builder /app/target/release/task-api ./task-api
+COPY --from=builder /usr/local/cargo/bin/sqlx /usr/local/bin/sqlx
+COPY migrations ./migrations
+
+# Change ownership
+RUN chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 3000
+
+# Run migrations then start the app
+CMD ["sh", "-c", "sqlx migrate run && ./task-api"]
