@@ -27,11 +27,6 @@ resource "multipass_instance" "k3s_worker" {
   image  = var.vm_image
 }
 
-# Load SSH public key
-locals {
-  ssh_pub_key = trimspace(file(var.ssh_public_key_path))
-}
-
 # read the master VM after creation
 data "multipass_instance" "k3s_master" {
   name = multipass_instance.k3s_master.name
