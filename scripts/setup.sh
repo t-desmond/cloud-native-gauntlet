@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Cloud Native Gauntlet - Setup Script
-# This script sets up the K3s cluster with master and worker nodes
+# This script sets up the K3s cluster with master and worker nodes using Terraform + Ansible
 # Compatible with macOS and Ubuntu
 
 set -e
@@ -85,6 +85,17 @@ check_prerequisites() {
         exit 1
     fi
     
+    # Check jq for JSON parsing
+    if ! command -v jq >/dev/null 2>&1; then
+        print_error "jq is required but not installed."
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install jq"
+        else
+            echo "  sudo apt install jq"
+        fi
+        exit 1
+    fi
+    
     # Check if SSH key exists
     if [ ! -f ~/.ssh/id_rsa.pub ]; then
         print_error "SSH public key not found at ~/.ssh/id_rsa.pub"
@@ -125,7 +136,7 @@ update_inventory() {
     WORKER_IP=$(cd ../terraform && terraform output -json vm_ips | jq -r '.worker')
     
     cat > inventory.ini << EOF
-[control]
+[master]
 k3s-master ansible_host=$MASTER_IP ansible_user=ubuntu
 
 [workers]
@@ -133,6 +144,7 @@ k3s-worker ansible_host=$WORKER_IP ansible_user=ubuntu
 
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 EOF
     
     print_status "Ansible inventory updated!"
@@ -164,40 +176,21 @@ setup_ssh_access() {
     print_status "SSH access configured!"
 }
 
-# Install K3s on master node
-install_k3s_master() {
-    print_status "Installing K3s on master node..."
+# Run Ansible provisioning
+run_ansible_provisioning() {
+    print_status "Running Ansible provisioning..."
     
-    MASTER_IP=$(cd infra/terraform && terraform output -json vm_ips | jq -r '.master')
+    cd infra/ansible
     
-    # Install K3s on master
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "curl -sfL https://get.k3s.io | sh -"
+    # Run the Ansible playbook
+    if ansible-playbook -i inventory.ini provision.yml -v; then
+        print_status "Ansible provisioning completed successfully!"
+    else
+        print_error "Ansible provisioning failed!"
+        exit 1
+    fi
     
-    # Wait for K3s to be ready
-    print_status "Waiting for K3s master to be ready..."
-    sleep 30
-    
-    # Get node token
-    NODE_TOKEN=$(ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "sudo cat /var/lib/rancher/k3s/server/node-token")
-    
-    print_status "K3s master installed successfully!"
-    print_status "Node token: ${NODE_TOKEN:0:20}..."
-}
-
-# Install K3s on worker node
-install_k3s_worker() {
-    print_status "Installing K3s on worker node..."
-    
-    MASTER_IP=$(cd infra/terraform && terraform output -json vm_ips | jq -r '.master')
-    WORKER_IP=$(cd infra/terraform && terraform output -json vm_ips | jq -r '.worker')
-    
-    # Get node token from master
-    NODE_TOKEN=$(ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "sudo cat /var/lib/rancher/k3s/server/node-token")
-    
-    # Install K3s on worker
-    ssh -o StrictHostKeyChecking=no ubuntu@$WORKER_IP "curl -sfL https://get.k3s.io | K3S_URL=https://$MASTER_IP:6443 K3S_TOKEN=$NODE_TOKEN sh -"
-    
-    print_status "K3s worker installed successfully!"
+    cd ../..
 }
 
 # Configure kubectl
@@ -210,7 +203,7 @@ configure_kubectl() {
     mkdir -p ~/.kube
     
     # Copy kubeconfig from master
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "sudo cat /etc/rancher/k3s/k3s.yaml" > ~/.kube/config
+    scp -o StrictHostKeyChecking=no ubuntu@$MASTER_IP:/etc/rancher/k3s/k3s.yaml ~/.kube/config
     
     # Update kubeconfig with correct IP (OS-specific sed command)
     if [[ "$OS" == "macos" ]]; then
@@ -219,8 +212,7 @@ configure_kubectl() {
         sed -i "s/127.0.0.1/$MASTER_IP/g" ~/.kube/config
     fi
     
-    # Test kubectl connection
-    kubectl cluster-info
+    chmod 600 ~/.kube/config
     
     print_status "kubectl configured successfully!"
 }
@@ -232,15 +224,19 @@ wait_for_cluster() {
     # Wait for nodes to be ready
     for i in {1..30}; do
         if kubectl get nodes 2>/dev/null | grep -q "Ready"; then
-            print_status "Cluster is ready!"
-            break
+            NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+            if [ "$NODE_COUNT" -eq 2 ]; then
+                print_status "Cluster is ready with both nodes!"
+                break
+            fi
         fi
         print_status "Waiting for nodes to be ready... (attempt $i/30)"
         sleep 10
     done
     
     # Show cluster status
-    kubectl get nodes
+    print_status "Current cluster status:"
+    kubectl get nodes -o wide
 }
 
 # Display cluster information
@@ -260,6 +256,7 @@ show_cluster_info() {
     echo "- kubectl is configured and ready to use"
     echo "- Check cluster status: kubectl get nodes"
     echo "- Check pods: kubectl get pods --all-namespaces"
+    echo "- Kubeconfig location: ~/.kube/config"
     echo ""
     echo "VM Access:"
     echo "- Master: ssh ubuntu@$MASTER_IP"
@@ -267,8 +264,18 @@ show_cluster_info() {
     echo ""
 }
 
+# Cleanup function for error handling
+cleanup() {
+    print_error "Setup failed. You may want to clean up resources:"
+    echo "- Destroy Terraform infrastructure: cd infra/terraform && terraform destroy"
+    echo "- Remove kubeconfig: rm ~/.kube/config"
+}
+
 # Main execution
 main() {
+    # Set up error handling
+    trap cleanup ERR
+    
     echo "=========================================="
     echo "   Cloud Native Gauntlet Setup Script"
     echo "=========================================="
@@ -279,13 +286,12 @@ main() {
     create_infrastructure
     update_inventory
     setup_ssh_access
-    install_k3s_master
-    install_k3s_worker
+    run_ansible_provisioning
     configure_kubectl
     wait_for_cluster
     show_cluster_info
     
-    echo "Setup completed successfully!"
+    print_status "Setup completed successfully!"
 }
 
-main "$@" 
+main "$@"

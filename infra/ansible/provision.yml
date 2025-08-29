@@ -1,5 +1,6 @@
 ---
-- hosts: all
+- name: Install base packages on all nodes
+  hosts: all
   become: yes
   tasks:
     - name: Install base packages
@@ -8,7 +9,8 @@
         update_cache: yes
         state: present
 
-- hosts: control
+- name: Configure master
+  hosts: master
   become: yes
   tasks:
     - name: Install K3s control plane
@@ -34,7 +36,8 @@
         dest: /tmp/k3s_token
         mode: '0600'
 
-- hosts: workers
+- name: Configure workers
+  hosts: workers
   become: yes
   tasks:
     - name: Get master IP
@@ -55,5 +58,5 @@
 
     - name: Wait for K3s agent to be ready
       wait_for:
-        path: /var/lib/rancher/k3s/agent/etc/kubelet.conf
+        path: /var/lib/rancher/k3s/agent/kubelet.kubeconfig
         timeout: 300
