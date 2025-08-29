@@ -27,6 +27,15 @@ resource "multipass_instance" "k3s_worker" {
   image  = var.vm_image
 }
 
+# Docker Registry server
+resource "multipass_instance" "docker_registry" {
+  name   = var.vm_names.registry
+  cpus   = var.registry_cpus
+  memory = var.registry_memory
+  disk   = var.registry_disk
+  image  = var.vm_image
+}
+
 # read the master VM after creation
 data "multipass_instance" "k3s_master" {
   name = multipass_instance.k3s_master.name
@@ -37,3 +46,7 @@ data "multipass_instance" "k3s_worker" {
   name = multipass_instance.k3s_worker.name
 }
 
+# read the registry VM after creation
+data "multipass_instance" "docker_registry" {
+  name = multipass_instance.docker_registry.name
+}

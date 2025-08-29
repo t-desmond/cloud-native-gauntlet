@@ -38,6 +38,25 @@ variable "worker_disk" {
   default     = "20G"
 }
 
+# Docker Registry configuration
+variable "registry_cpus" {
+  description = "Number of CPUs for registry node"
+  type        = number
+  default     = 1
+}
+
+variable "registry_memory" {
+  description = "Memory for registry node"
+  type        = string
+  default     = "2G"
+}
+
+variable "registry_disk" {
+  description = "Disk size for registry node"
+  type        = string
+  default     = "15G"
+}
+
 # VM configuration
 variable "vm_image" {
   description = "Ubuntu image version"
@@ -56,7 +75,8 @@ variable "vm_names" {
   description = "Names for the VMs"
   type        = map(string)
   default = {
-    master = "k3s-master"
-    worker = "k3s-worker"
+    master   = "k3s-master"
+    worker   = "k3s-worker"
+    registry = "docker-registry"
   }
-} 
+}

@@ -1,0 +1,47 @@
+---
+- name: Configure K3s nodes for private registry
+  hosts: k3s
+  become: yes
+  vars:
+    registry_host: "{{ hostvars[groups['registry'][0]]['ansible_host'] }}"
+    registry_port: 5000
+
+  tasks:
+    - name: Configure Docker daemon.json for insecure registry
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "insecure-registries": ["{{ registry_host }}:{{ registry_port }}"]
+          }
+        mode: '0644'
+      notify: restart docker
+
+    - name: Ensure /etc/rancher/k3s directory exists
+      file:
+        path: /etc/rancher/k3s
+        state: directory
+        mode: '0755'
+
+    - name: Configure K3s registries.yaml for containerd
+      copy:
+        dest: /etc/rancher/k3s/registries.yaml
+        content: |
+          mirrors:
+            "{{ registry_host }}:{{ registry_port }}":
+              endpoint:
+                - "http://{{ registry_host }}:{{ registry_port }}"
+        mode: '0644'
+      notify: restart k3s services
+
+  handlers:
+    - name: restart docker
+      systemd:
+        name: docker
+        state: restarted
+      when: ansible_service_mgr == "systemd"
+
+    - name: restart k3s services
+      systemd:
+        name: "{{ 'k3s' if inventory_hostname in groups['master'] else 'k3s-agent' }}"
+        state: restarted

@@ -1,5 +1,5 @@
 - name: Initial K3s cluster setup - master and workers
-  hosts: all
+  hosts: k3s
   become: yes
   tasks:
     - name: Install essential packages
@@ -7,6 +7,12 @@
         name: [curl, vim, git, docker.io]
         update_cache: yes
         state: present
+
+    - name: Add default users to the docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
 
 # -------------------- Master Setup --------------------
 - name: Configure K3s master node
@@ -83,7 +89,7 @@
       shell: |
         curl -sfL https://get.k3s.io | K3S_URL=https://{{ master_ip }}:6443 K3S_TOKEN={{ token_file.content | b64decode }} sh -
       args:
-        creates: /usr/local/bin/k3s-agent
+        creates: /etc/systemd/system/k3s-agent.service
 
     - name: Wait for K3s agent kubelet config
       wait_for:

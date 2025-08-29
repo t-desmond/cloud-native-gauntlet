@@ -8,6 +8,9 @@ set -e
 
 echo "Starting Cloud Native Gauntlet Setup..."
 
+
+RUN_LOCAL_REGISTRY=false
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -133,6 +136,7 @@ update_inventory() {
     
     MASTER_IP=$(cd ../terraform && terraform output -json vm_ips | jq -r '.master')
     WORKER_IP=$(cd ../terraform && terraform output -json vm_ips | jq -r '.worker')
+    REGISTRY_IP=$(cd ../terraform && terraform output -json vm_ips | jq -r '.registry')
     
     cat > inventory.ini << EOF
 [master]
@@ -141,9 +145,18 @@ k3s-master ansible_host=$MASTER_IP ansible_user=ubuntu
 [workers]
 k3s-worker ansible_host=$WORKER_IP ansible_user=ubuntu
 
+[registry]
+docker-registry ansible_host=$REGISTRY_IP ansible_user=ubuntu
+
+[k3s:children]
+master
+workers
+
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3
 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+registry_host=$REGISTRY_IP
+registry_port=5000
 EOF
     
     print_status "Ansible inventory updated!"
@@ -154,26 +167,27 @@ EOF
 setup_ssh_access() {
     print_status "Setting up SSH access to VMs..."
     
-    MASTER_IP=$(cd infra/terraform && terraform output -json vm_ips | jq -r '.master')
-    WORKER_IP=$(cd infra/terraform && terraform output -json vm_ips | jq -r '.worker')
+    # Get VM IPs from Terraform
+    VM_IPS=$(cd infra/terraform && terraform output -json vm_ips)
     
-    # Copy SSH key to VMs using multipass first
-    print_status "Copying SSH key to master node..."
-    multipass exec k3s-master -- mkdir -p /home/ubuntu/.ssh
-    cat ~/.ssh/id_rsa.pub | multipass exec k3s-master -- tee -a /home/ubuntu/.ssh/authorized_keys
+    declare -A NODES
+    NODES=(
+        ["k3s-master"]=$(echo "$VM_IPS" | jq -r '.master')
+        ["k3s-worker"]=$(echo "$VM_IPS" | jq -r '.worker')
+        ["docker-registry"]=$(echo "$VM_IPS" | jq -r '.registry')
+    )
     
-    print_status "Copying SSH key to worker node..."
-    multipass exec k3s-worker -- mkdir -p /home/ubuntu/.ssh
-    cat ~/.ssh/id_rsa.pub | multipass exec k3s-worker -- tee -a /home/ubuntu/.ssh/authorized_keys
+    for NODE in "${!NODES[@]}"; do
+        print_status "Copying SSH key to $NODE (${NODES[$NODE]})..."
+        multipass exec $NODE -- mkdir -p /home/ubuntu/.ssh
+        cat ~/.ssh/id_rsa.pub | multipass exec $NODE -- tee -a /home/ubuntu/.ssh/authorized_keys
+        multipass exec $NODE -- chmod 700 /home/ubuntu/.ssh
+        multipass exec $NODE -- chmod 600 /home/ubuntu/.ssh/authorized_keys
+    done
     
-    # Set proper permissions
-    multipass exec k3s-master -- chmod 700 /home/ubuntu/.ssh
-    multipass exec k3s-master -- chmod 600 /home/ubuntu/.ssh/authorized_keys
-    multipass exec k3s-worker -- chmod 700 /home/ubuntu/.ssh
-    multipass exec k3s-worker -- chmod 600 /home/ubuntu/.ssh/authorized_keys
-    
-    print_status "SSH access configured!"
+    print_status "SSH access configured for all nodes!"
 }
+
 
 # Run Ansible provisioning
 run_ansible_provisioning() {
@@ -181,12 +195,23 @@ run_ansible_provisioning() {
     
     cd infra/ansible
     
-    # Run the Ansible playbook
-    if ansible-playbook -i inventory.ini provision.yml -v; then
-        print_status "Ansible provisioning completed successfully!"
+    # Always run K3s configuration
+    if ansible-playbook -i inventory.ini configure-k3s.yml -v; then
+        print_status "K3s provisioning completed successfully!"
     else
-        print_error "Ansible provisioning failed!"
+        print_error "K3s provisioning failed!"
         exit 1
+    fi
+
+    # Conditionally run the registry playbook
+    if [ "$RUN_LOCAL_REGISTRY" = true ]; then
+        print_status "Running local registry playbook..."
+        if ansible-playbook -i inventory.ini setup-registry.yml -v; then
+            print_status "Local registry setup completed successfully!"
+        else
+            print_error "Local registry setup failed!"
+            exit 1
+        fi
     fi
     
     cd ../..
@@ -250,6 +275,13 @@ show_cluster_info() {
     
     echo "K3s Master IP: $MASTER_IP"
     echo "K3s Worker IP: $WORKER_IP"
+    
+    if [ "$RUN_LOCAL_REGISTRY" = true ]; then
+        REGISTRY_IP=$(cd infra/terraform && terraform output -json vm_ips | jq -r '.registry')
+        echo "Local Docker Registry IP: $REGISTRY_IP"
+        echo "Registry Port: 5000"
+    fi
+
     echo ""
     echo "Cluster Management:"
     echo "- kubectl is configured and ready to use"
@@ -260,6 +292,11 @@ show_cluster_info() {
     echo "VM Access:"
     echo "- Master: ssh ubuntu@$MASTER_IP"
     echo "- Worker: ssh ubuntu@$WORKER_IP"
+    
+    if [ "$RUN_LOCAL_REGISTRY" = true ]; then
+        echo "- Registry: ssh ubuntu@$REGISTRY_IP"
+    fi
+    
     echo ""
 }
 
@@ -292,5 +329,17 @@ main() {
     
     print_status "Setup completed successfully!"
 }
+
+# Parse script arguments
+for arg in "$@"; do
+    case $arg in
+        --local-registry)
+            RUN_LOCAL_REGISTRY=true
+            shift
+            ;;
+        *)
+            ;;
+    esac
+done
 
 main "$@"
