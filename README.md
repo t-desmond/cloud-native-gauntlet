@@ -83,15 +83,16 @@ cloud-native-gauntlet/
 ├── infra/                       # Infrastructure automation
 │   ├── ansible/                 # Ansible playbooks for K3s setup
 │   └── terraform/               # Terraform for VM creation
-├── apps/                        # Application deployments (templates)
-│   ├── app1/                    # Sample application 1
-│   └── app2/                    # Sample application 2
-├── monitoring/                  # Monitoring stack (templates)
+├── apps/                        # Application deployments
+│   ├── app1/                    # Sample application 1 with task-api implementation
+│   │   └── task-api/            # Rust Axum-based task management API
+│   └── app2/                    # Sample application 2 (placeholder)
+├── monitoring/                  # Monitoring stack (templates - not yet implemented)
 ├── gitops/                      # GitOps configuration with ArgoCD
 │   ├── argocd/                  # ArgoCD application definitions
 │   └── scripts/                 # GitOps automation scripts
 ├── scripts/                     # Automation scripts
-└── kustomization/               # Environment-specific configs (templates)
+└── kustomization/               # Environment-specific configs (templates - not yet implemented)
 ```
 
 ## Components
@@ -102,25 +103,39 @@ cloud-native-gauntlet/
 - **Multipass**: Lightweight VM provider for development
 
 ### Applications
-- **App1**: Sample web application (template)
-- **App2**: Sample API service (template)
-- **Prometheus**: Metrics collection (template)
-- **Grafana**: Metrics visualization (template)
+- **App1**: Task management API built with Rust and Axum (fully implemented)
+  - RESTful API with JWT authentication
+  - PostgreSQL database integration
+  - Swagger UI documentation
+  - Docker and Docker Compose support
+- **App2**: Placeholder for future application implementation
+- **Prometheus**: Metrics collection (template - not yet implemented)
+- **Grafana**: Metrics visualization (template - not yet implemented)
 
 ### Automation
 - **setup.sh**: Complete automated setup script (cross-platform)
+  - Creates Multipass VMs with Terraform
+  - Configures K3s cluster with Ansible
+  - Sets up kubectl access
 - **deploy.sh**: Application deployment script
+  - Deploys monitoring stack
+  - Deploys applications to K3s cluster
+- **install-argocd.sh**: ArgoCD installation script for GitOps
 
 ### GitOps
-- **ArgoCD**: GitOps continuous deployment tool
-- **Application Definitions**: ArgoCD application configurations
-- **Automated Sync**: Automatic deployment from Git changes
+- **ArgoCD**: GitOps continuous deployment tool (installation script provided)
+- **Application Definitions**: ArgoCD application configurations for App1 and Monitoring
+- **Automated Sync**: Automatic deployment from Git changes (when fully implemented)
 
 ## Development
 
 ### Adding New Applications
-1. Replace placeholder files in `apps/` with your actual Kubernetes manifests
+1. Replace placeholder files in `apps/app2/` with your actual Kubernetes manifests
 2. Update deployment scripts as needed
+3. For App1, the task-api is already implemented but can be extended:
+   - Located in `apps/app1/task-api/`
+   - Built with Rust and Axum framework
+   - Features JWT authentication and PostgreSQL integration
 
 ### Modifying Infrastructure
 1. Edit Terraform files in `infra/terraform/`

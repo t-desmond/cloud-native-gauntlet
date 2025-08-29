@@ -113,7 +113,6 @@ create_infrastructure() {
     cd infra/terraform
     
     terraform init
-    terraform plan
     terraform apply -auto-approve
     
     MASTER_IP=$(terraform output -json vm_ips | jq -r '.master')
@@ -203,7 +202,7 @@ configure_kubectl() {
     mkdir -p ~/.kube
     
     # Copy kubeconfig from master
-    scp -o StrictHostKeyChecking=no ubuntu@$MASTER_IP:/etc/rancher/k3s/k3s.yaml ~/.kube/config
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "sudo cat /etc/rancher/k3s/k3s.yaml" > ~/.kube/config
     
     # Update kubeconfig with correct IP (OS-specific sed command)
     if [[ "$OS" == "macos" ]]; then
