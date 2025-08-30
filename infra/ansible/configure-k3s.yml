@@ -53,6 +53,7 @@
     - name: Copy master kubeconfig to user home
       command: cat /etc/rancher/k3s/k3s.yaml
       register: kubeconfig_raw
+      changed_when: false
 
     - name: Save kubeconfig to ~/.kube/config
       copy:
