@@ -5,11 +5,13 @@
 # Compatible with macOS and Ubuntu
 
 set -e
+trap cleanup ERR SIGINT SIGTERM
 
 echo "Starting Cloud Native Gauntlet Setup..."
 
 
 RUN_LOCAL_REGISTRY=false
+TERRAFORM_APPLIED=false
 
 # Colors for output
 RED='\033[0;31m'
@@ -117,6 +119,9 @@ create_infrastructure() {
     
     terraform init
     terraform apply -auto-approve
+
+    # Mark Terraform as applied
+    TERRAFORM_APPLIED=true
     
     MASTER_IP=$(terraform output -json vm_ips | jq -r '.master')
     WORKER_IP=$(terraform output -json vm_ips | jq -r '.worker')
@@ -166,28 +171,34 @@ EOF
 # Set up SSH access to VMs
 setup_ssh_access() {
     print_status "Setting up SSH access to VMs..."
-    
+
     # Get VM IPs from Terraform
     VM_IPS=$(cd infra/terraform && terraform output -json vm_ips)
-    
-    declare -A NODES
-    NODES=(
-        ["k3s-master"]=$(echo "$VM_IPS" | jq -r '.master')
-        ["k3s-worker"]=$(echo "$VM_IPS" | jq -r '.worker')
-        ["docker-registry"]=$(echo "$VM_IPS" | jq -r '.registry')
+
+    # Define node names and their corresponding IPs in arrays
+    NODES=("k3s-master" "k3s-worker" "docker-registry")
+    IPS=(
+        $(echo "$VM_IPS" | jq -r '.master')
+        $(echo "$VM_IPS" | jq -r '.worker')
+        $(echo "$VM_IPS" | jq -r '.registry')
     )
-    
-    for NODE in "${!NODES[@]}"; do
-        print_status "Copying SSH key to $NODE (${NODES[$NODE]})..."
+
+    # Loop over each node and configure SSH access
+    for i in "${!NODES[@]}"; do
+        NODE=${NODES[$i]}
+        IP=${IPS[$i]}
+
+        print_status "Copying SSH key to $NODE ($IP)..."
+
+        # Create .ssh directory and copy public key
         multipass exec $NODE -- mkdir -p /home/ubuntu/.ssh
         cat ~/.ssh/id_rsa.pub | multipass exec $NODE -- tee -a /home/ubuntu/.ssh/authorized_keys
         multipass exec $NODE -- chmod 700 /home/ubuntu/.ssh
         multipass exec $NODE -- chmod 600 /home/ubuntu/.ssh/authorized_keys
     done
-    
+
     print_status "SSH access configured for all nodes!"
 }
-
 
 # Run Ansible provisioning
 run_ansible_provisioning() {
@@ -210,7 +221,6 @@ run_ansible_provisioning() {
             print_status "Local registry setup completed successfully!"
         else
             print_error "Local registry setup failed!"
-            exit 1
         fi
     fi
     
@@ -302,16 +312,28 @@ show_cluster_info() {
 
 # Cleanup function for error handling
 cleanup() {
-    print_error "Setup failed. You may want to clean up resources:"
-    echo "- Destroy Terraform infrastructure: cd infra/terraform && terraform destroy"
-    echo "- Remove kubeconfig: rm ~/.kube/config"
+    print_error "Setup interrupted or failed. Cleaning up resources..."
+
+    if [ "$TERRAFORM_APPLIED" = true ]; then
+        print_status "[INFO] Destroying Terraform-managed infrastructure..."
+        cd infra/terraform
+        terraform destroy -auto-approve
+        cd ../..
+    else
+        print_status "[INFO] Terraform was not applied. No resources to destroy."
+    fi
+
+    # Remove kubeconfig if it exists
+    if [ -f ~/.kube/config ]; then
+        print_status "[INFO] Removing kubeconfig..."
+        rm -f ~/.kube/config
+    fi
+
+    exit 1
 }
 
 # Main execution
 main() {
-    # Set up error handling
-    trap cleanup ERR
-    
     echo "=========================================="
     echo "   Cloud Native Gauntlet Setup Script"
     echo "=========================================="

@@ -1,12 +1,42 @@
 ---
-- name: Configure K3s nodes for private registry
-  hosts: k3s
+# -------------------- Install Docker on registry host --------------------
+- name: Install Docker on registry host
+  hosts: registry
+  become: yes
+  tasks:
+    - name: Install Docker package
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Ensure Docker service is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user to Docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+- name: Configure K3s nodes and registry for local registry
+  hosts: k3s:registry
   become: yes
   vars:
     registry_host: "{{ hostvars[groups['registry'][0]]['ansible_host'] }}"
-    registry_port: 5000
+    registry_data_path: "/home/ubuntu/registry/data"
 
   tasks:
+    # -------------------- Docker daemon --------------------
+    - name: Ensure /etc/docker exists
+      file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
     - name: Configure Docker daemon.json for insecure registry
       copy:
         dest: /etc/docker/daemon.json
@@ -15,8 +45,13 @@
             "insecure-registries": ["{{ registry_host }}:{{ registry_port }}"]
           }
         mode: '0644'
-      notify: restart docker
 
+    - name: Restart docker after configuring insecure registry
+      systemd:
+        name: docker
+        state: restarted
+
+    # -------------------- K3s containerd --------------------
     - name: Ensure /etc/rancher/k3s directory exists
       file:
         path: /etc/rancher/k3s
@@ -32,16 +67,53 @@
               endpoint:
                 - "http://{{ registry_host }}:{{ registry_port }}"
         mode: '0644'
-      notify: restart k3s services
+      when: "'k3s' in group_names"
 
-  handlers:
-    - name: restart docker
-      systemd:
-        name: docker
-        state: restarted
-      when: ansible_service_mgr == "systemd"
-
-    - name: restart k3s services
+    - name: Restart K3s service after configuring registries.yaml
       systemd:
         name: "{{ 'k3s' if inventory_hostname in groups['master'] else 'k3s-agent' }}"
         state: restarted
+      when: "'k3s' in group_names"
+
+    # -------------------- Registry container --------------------
+    - name: Ensure registry data directory exists with correct permissions
+      file:
+        path: "{{ registry_data_path }}"
+        state: directory
+        owner: 1000
+        group: 1000
+        mode: '0755'
+      when: "'registry' in group_names"
+
+    - name: Ensure local registry container is running
+      docker_container:
+        name: registry
+        image: registry:2
+        state: started
+        restart_policy: always
+        published_ports:
+          - "{{ registry_port }}:5000"
+        volumes:
+          - "{{ registry_data_path }}:/var/lib/registry"
+        env:
+          REGISTRY_HTTP_ADDR: "0.0.0.0:5000"
+          REGISTRY_HTTP_TLS_CERTIFICATE: ""
+          REGISTRY_HTTP_TLS_KEY: ""
+      when: "'registry' in group_names"
+
+    # -------------------- Pre-pull images --------------------
+    - name: Pull image if missing and push to local registry
+      docker_image:
+        name: "{{ item }}"
+        source: pull
+        tag: latest
+        repository: "{{ registry_host }}:{{ registry_port }}/{{ item | regex_replace('^.*/','') }}"
+        push: yes
+      loop:
+        - quay.io/keycloak/keycloak:latest
+        - ghcr.io/cloudnative-pg/cloudnative-pg:latest
+        - gitea/gitea:latest
+        - buoyantio/linkerd:latest
+        - ghcr.io/t-desmond/task-api:latest
+        - ghcr.io/cloudnative-pg/postgresql:16.4
+      when: "'registry' in group_names"
