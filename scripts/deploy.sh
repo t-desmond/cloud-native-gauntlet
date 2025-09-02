@@ -1,117 +1,193 @@
 #!/bin/bash
 
 # Cloud Native Gauntlet - Deploy Script
-# This script deploys applications to the K3s cluster
-# Compatible with macOS and Ubuntu
+# Deploys applications to a K3s cluster via SSH to master VM
 
 set -e
-
-echo "Deploying applications to K3s cluster..."
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 NC='\033[0m'
 
 print_status() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
 
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if kubectl is configured
-check_kubectl() {
-    if ! kubectl cluster-info >/dev/null 2>&1; then
-        print_error "kubectl is not configured or cluster is not accessible"
-        print_status "Please run the setup script first: ./scripts/setup.sh"
+# Get master VM IP from terraform output
+get_master_ip() {
+    MASTER_IP=$(cd infra/terraform && terraform output -json vm_ips | jq -r '.master' 2>/dev/null)
+    [[ -z "$MASTER_IP" ]] && { print_error "Could not get master IP"; exit 1; }
+    echo "$MASTER_IP"
+}
+
+# Get registry IP from terraform output
+get_registry_ip() {
+    REGISTRY_IP=$(cd infra/terraform && terraform output -json vm_ips | jq -r '.registry' 2>/dev/null)
+    [[ -z "$REGISTRY_IP" ]] && { print_error "Could not get registry IP"; exit 1; }
+    echo "$REGISTRY_IP"
+}
+
+# Check SSH access to master VM
+check_ssh_access() {
+    local MASTER_IP
+    MASTER_IP=$(get_master_ip)
+    print_status "Checking SSH access to $MASTER_IP..."
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "echo 'SSH connection successful'" >/dev/null 2>&1 || {
+        print_error "Cannot connect to master VM. Run setup.sh first."
         exit 1
+    }
+}
+
+# Configure /etc/hosts for task-api.local
+configure_hosts_file() {
+    local MASTER_IP
+    MASTER_IP=$(get_master_ip)
+    print_status "Configuring /etc/hosts for task-api.local..."
+    if grep -q "task-api.local" /etc/hosts; then
+        if [[ "$(uname)" == "Darwin" ]]; then
+            sudo sed -i '' "s/.*task-api.local/$MASTER_IP task-api.local/" /etc/hosts
+        else
+            sudo sed -i "s/.*task-api.local/$MASTER_IP task-api.local/" /etc/hosts
+        fi
+    else
+        echo "$MASTER_IP task-api.local" | sudo tee -a /etc/hosts >/dev/null
     fi
-    
-    print_status "Kubernetes cluster is accessible"
 }
 
-# Deploy monitoring stack
-deploy_monitoring() {
-    print_status "Deploying monitoring stack..."
-    
-    # Create monitoring namespace
-    kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-    
-    # Deploy monitoring components
-    kubectl apply -f monitoring/
-    
-    print_status "Monitoring stack deployed"
+# Execute kubectl command on master VM with proper kubeconfig
+run_kubectl_on_master() {
+    local MASTER_IP
+    MASTER_IP=$(get_master_ip)
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP \
+        "kubectl --kubeconfig /home/ubuntu/.kube/config $1"
 }
 
-# Deploy applications
-deploy_applications() {
-    print_status "Deploying applications..."
-    
-    # Deploy App1
-    kubectl apply -f apps/app1/
-    
-    # Deploy App2
-    kubectl apply -f apps/app2/
-    
-    print_status "Applications deployed"
+# Update registry IPs in manifests
+update_registry_ips() {
+    local REGISTRY_IP
+    REGISTRY_IP=$(get_registry_ip)
+    print_status "Updating registry IPs in manifests to $REGISTRY_IP:5000..."
+
+    local MASTER_IP
+    MASTER_IP=$(get_master_ip)
+
+    local manifests=(
+        "/home/ubuntu/projects/apps/database/cluster-app.yaml"
+        "/home/ubuntu/projects/apps/backend/task-api-deployment.yaml"
+        "/home/ubuntu/projects/apps/database/cnpg-1.27.0.yaml"
+    )
+
+    for manifest in "${manifests[@]}"; do
+        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "
+            TMPFILE=\$(mktemp)
+            sed 's/192\\.168\\.64\\.[0-9]*:5000/$REGISTRY_IP:5000/g' '$manifest' > \$TMPFILE
+            mv \$TMPFILE '$manifest'
+        "
+    done
 }
 
-# Wait for deployments to be ready
-wait_for_deployments() {
-    print_status "Waiting for deployments to be ready..."
-    
-    # Wait for monitoring deployments
-    kubectl wait --for=condition=available --timeout=300s deployment/prometheus -n monitoring || true
-    kubectl wait --for=condition=available --timeout=300s deployment/grafana -n monitoring || true
-    
-    # Wait for application deployments
-    kubectl wait --for=condition=available --timeout=300s deployment/app1 || true
-    kubectl wait --for=condition=available --timeout=300s deployment/app2 || true
-    
-    print_status "Deployments are ready"
+# Deploy database components (CNPG)
+deploy_database() {
+    print_status "Deploying database components..."
+    local MASTER_IP
+    MASTER_IP=$(get_master_ip)
+
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "
+        export KUBECONFIG=/home/ubuntu/.kube/config
+
+        # Create namespace
+        kubectl create namespace database --dry-run=client -o yaml | kubectl apply -f -
+
+        # Apply CNPG operator manifests
+        kubectl delete -f /home/ubuntu/projects/apps/database/cnpg-1.27.0.yaml --ignore-not-found
+        kubectl apply --server-side -f /home/ubuntu/projects/apps/database/cnpg-1.27.0.yaml
+
+        # Wait for CNPG operator deployment to be ready
+        kubectl -n cnpg-system wait --for=condition=available --timeout=180s deployment/cnpg-controller-manager
+    "
+
+    # Apply secrets and CNPG Cluster
+    local manifests=(
+        "/home/ubuntu/projects/apps/database/db-secret.yaml"
+        "/home/ubuntu/projects/apps/database/cluster-app.yaml"
+    )
+
+    for manifest in "${manifests[@]}"; do
+        print_status "Deleting existing $(basename $manifest)..."
+        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f $manifest --ignore-not-found"
+        print_status "Applying $(basename $manifest)..."
+        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f $manifest"
+    done
+
+    print_status "Waiting for CNPG cluster to be ready..."
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config wait --for=condition=ready --timeout=300s cluster/cluster-app -n database"
 }
 
-# Display deployment status
+# Deploy backend components
+deploy_backend() {
+    print_status "Deploying backend components..."
+    local MASTER_IP
+    MASTER_IP=$(get_master_ip)
+
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "
+        export KUBECONFIG=/home/ubuntu/.kube/config
+        kubectl create namespace backend --dry-run=client -o yaml | kubectl apply -f -
+    "
+
+    local manifests=(
+        "/home/ubuntu/projects/apps/backend/task-api-secret.yaml"
+        "/home/ubuntu/projects/apps/backend/task-api-configmap.yaml"
+        "/home/ubuntu/projects/apps/backend/task-api-deployment.yaml"
+        "/home/ubuntu/projects/apps/backend/task-api-service.yaml"
+        "/home/ubuntu/projects/apps/backend/task-api-ingress.yaml"
+    )
+
+    for manifest in "${manifests[@]}"; do
+        print_status "Deleting existing $(basename $manifest)..."
+        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f $manifest --ignore-not-found"
+        print_status "Applying $(basename $manifest)..."
+        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f $manifest"
+    done
+
+    print_status "Waiting for backend deployment to be ready..."
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config wait --for=condition=available --timeout=300s deployment/task-api -n backend"
+}
+
+# Show deployment status
 show_deployment_status() {
+    local MASTER_IP
+    MASTER_IP=$(get_master_ip)
+    local REGISTRY_IP
+    REGISTRY_IP=$(get_registry_ip)
+
     print_status "Deployment completed successfully!"
-    echo ""
-    echo "Deployment Status:"
+    echo -e "\nAccess Information:"
     echo "=================="
-    
-    echo "Cluster Nodes:"
-    kubectl get nodes
+    echo "Backend API: http://task-api.local/api"
+    echo "Health Check: http://task-api.local/api/health"
+    echo "Database Port Forward: kubectl port-forward svc/cluster-app-rw 5432:5432 -n database"
+    echo "Registry: $REGISTRY_IP:5000"
+
+    echo -e "\nPods:"
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config get pods --all-namespaces"
+
+    echo -e "\nServices:"
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config get services --all-namespaces"
+
+    echo "Database:"
+    echo "- Port Forward: kubectl port-forward svc/cluster-app-rw 5432:5432 -n database"
+    echo "- Connection: psql -U admin -d database -h localhost"
+
     echo ""
-    
-    echo "All Pods:"
-    kubectl get pods --all-namespaces
-    echo ""
-    
-    echo "Services:"
-    kubectl get services --all-namespaces
-    echo ""
-    
-    # Get cluster IP for access information
-    MASTER_IP=$(cd infra/terraform && terraform output -json vm_ips | jq -r '.master' 2>/dev/null || echo "N/A")
-    
-    if [[ "$MASTER_IP" != "N/A" ]]; then
-        echo "Access Information:"
-        echo "=================="
-        echo "Applications:"
-        echo "- App1: http://$MASTER_IP:30003"
-        echo "- App2: http://$MASTER_IP:30004"
-        echo ""
-        echo "Monitoring:"
-        echo "- Grafana: http://$MASTER_IP:30001 (admin/admin)"
-        echo "- Prometheus: http://$MASTER_IP:30002"
-        echo ""
-    fi
+    echo "API Testing Examples:"
+    echo "- Login: curl -X POST http://task-api.local/api/auth/login \\"
+    echo "  -H \"Content-Type: application/json\" \\"
+    echo "  -d '{\"email\": \"admin@example.com\", \"password\": \"adminpassword\"}'"
 }
 
 # Main execution
@@ -120,14 +196,13 @@ main() {
     echo "   Cloud Native Gauntlet Deploy Script"
     echo "=========================================="
     echo ""
-    
-    check_kubectl
-    deploy_monitoring
-    deploy_applications
-    wait_for_deployments
+    check_ssh_access
+    configure_hosts_file
+    update_registry_ips
+    deploy_database
+    deploy_backend
     show_deployment_status
-    
-    echo "Deployment completed successfully!"
+    print_status "Deployment completed!"
 }
 
-main "$@" 
+main "$@"
