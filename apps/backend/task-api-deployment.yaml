@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: task-api
+  namespace: backend
 spec:
   replicas: 1
   selector:
@@ -14,7 +15,7 @@ spec:
     spec:
       containers:
       - name: task-api
-        image: 192.168.64.81:5000/task-api:latest
+        image: 192.168.64.93:5000/task-api:latest
         ports:
         - containerPort: 3000
         envFrom:
