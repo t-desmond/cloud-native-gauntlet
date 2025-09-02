@@ -36,6 +36,16 @@ COPY migrations ./migrations
 RUN chown -R appuser:appuser /app
 USER appuser
 
+# Metadata Labels
+LABEL org.opencontainers.image.title="Task API"
+LABEL org.opencontainers.image.description="A Rust backend API with Swagger docs"
+LABEL org.opencontainers.image.version="v1.0.0"
+LABEL org.opencontainers.image.authors="t-desmond desmondtardzenyuy@gmail.com"
+LABEL org.opencontainers.image.source="https://github.com/t-desmond/cloud-native-gauntlet"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.revision="initial working version"
+LABEL org.opencontainers.image.created="2025-09-02"
+
 EXPOSE 3000
 
 # Run migrations then start the app
