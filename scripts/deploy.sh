@@ -43,19 +43,19 @@ check_ssh_access() {
     }
 }
 
-# Configure /etc/hosts for task-api.local
+# Configure /etc/hosts for task-api.local and keycloak.local
 configure_hosts_file() {
     local MASTER_IP
     MASTER_IP=$(get_master_ip)
     print_status "Configuring /etc/hosts for task-api.local..."
     if grep -q "task-api.local" /etc/hosts; then
         if [[ "$(uname)" == "Darwin" ]]; then
-            sudo sed -i '' "s/.*task-api.local/$MASTER_IP task-api.local/" /etc/hosts
+            sudo sed -i '' "s/.*task-api.local/$MASTER_IP task-api.local keycloak.local/" /etc/hosts
         else
-            sudo sed -i "s/.*task-api.local/$MASTER_IP task-api.local/" /etc/hosts
+            sudo sed -i "s/.*task-api.local/$MASTER_IP task-api.local keycloak.local/" /etc/hosts
         fi
     else
-        echo "$MASTER_IP task-api.local" | sudo tee -a /etc/hosts >/dev/null
+        echo "$MASTER_IP task-api.local keycloak.local" | sudo tee -a /etc/hosts >/dev/null
     fi
 }
 
