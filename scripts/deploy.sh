@@ -158,6 +158,52 @@ deploy_backend() {
     ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config wait --for=condition=available --timeout=300s deployment/task-api -n backend"
 }
 
+# Deploy auth components (Keycloak)
+deploy_auth() {
+    print_status "Deploying Keycloak (auth components)..."
+    local MASTER_IP
+    MASTER_IP=$(get_master_ip)
+
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "
+        export KUBECONFIG=/home/ubuntu/.kube/config
+        kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
+    "
+
+    # Secrets and ConfigMap
+    local pre_manifests=(
+        "/home/ubuntu/projects/apps/auth/keycloak-secret.yaml"
+        "/home/ubuntu/projects/apps/auth/keycloak-configmap.yaml"
+    )
+
+    for manifest in "${pre_manifests[@]}"; do
+        print_status "Deleting existing $(basename $manifest)..."
+        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f $manifest --ignore-not-found"
+        print_status "Applying $(basename $manifest)..."
+        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f $manifest"
+    done
+
+    # Keycloak deployment
+    print_status "Deploying Keycloak deployment..."
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f /home/ubuntu/projects/apps/auth/keycloak-deployment.yaml --ignore-not-found"
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f /home/ubuntu/projects/apps/auth/keycloak-deployment.yaml"
+
+    print_status "Waiting for Keycloak deployment to be ready..."
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config wait --for=condition=available --timeout=300s deployment/keycloak -n keycloak"
+
+    # Service and Ingress
+    local post_manifests=(
+        "/home/ubuntu/projects/apps/auth/keycloak-service.yaml"
+        "/home/ubuntu/projects/apps/auth/keycloak-ingress.yaml"
+    )
+
+    for manifest in "${post_manifests[@]}"; do
+        print_status "Deleting existing $(basename $manifest)..."
+        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f $manifest --ignore-not-found"
+        print_status "Applying $(basename $manifest)..."
+        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f $manifest"
+    done
+}
+
 # Show deployment status
 show_deployment_status() {
     local MASTER_IP
@@ -172,6 +218,7 @@ show_deployment_status() {
     echo "Health Check: http://task-api.local/api/health"
     echo "Database Port Forward: kubectl port-forward svc/cluster-app-rw 5432:5432 -n database"
     echo "Registry: $REGISTRY_IP:5000"
+    echo "Keycloak: http://keycloak.local/auth"
 
     echo -e "\nPods:"
     ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config get pods --all-namespaces"
@@ -188,6 +235,11 @@ show_deployment_status() {
     echo "- Login: curl -X POST http://task-api.local/api/auth/login \\"
     echo "  -H \"Content-Type: application/json\" \\"
     echo "  -d '{\"email\": \"admin@example.com\", \"password\": \"adminpassword\"}'"
+
+    echo ""
+    echo "Keycloak Testing:"
+    echo "- Admin Console: http://keycloak.local/"
+    echo "- Default credentials: (check keycloak-secret.yaml)"
 }
 
 # Main execution
@@ -201,6 +253,7 @@ main() {
     update_registry_ips
     deploy_database
     deploy_backend
+    deploy_auth
     show_deployment_status
     print_status "Deployment completed!"
 }
