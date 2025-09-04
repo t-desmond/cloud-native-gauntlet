@@ -1,5 +1,6 @@
 pub mod config;
-pub mod user;
+pub mod logging;
 pub mod task;
 pub mod response;
 pub mod state;
+pub mod role;

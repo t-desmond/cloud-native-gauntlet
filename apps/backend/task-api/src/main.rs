@@ -1,6 +1,7 @@
+use axum::serve;
+use reqwest::Url;
 use sqlx::PgPool;
 use std::sync::Arc;
-use axum::serve;
 use tokio::net::TcpListener;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -9,7 +10,9 @@ mod handlers;
 mod models;
 mod routes;
 
-use crate::models::{state::AppState, config::Config};
+use crate::models::{config::Config, state::AppState, logging::LoggingConfig};
+use axum_keycloak_auth::instance::{KeycloakAuthInstance, KeycloakConfig};
+use tracing::{info, error};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -17,8 +20,6 @@ use crate::models::{state::AppState, config::Config};
         handlers::task::create_task,
         handlers::task::list_tasks,
         handlers::task::delete_task,
-        handlers::user::register_user,
-        handlers::user::login_user,
         handlers::user::list_users,
         handlers::user::delete_user,
         handlers::health::health,
@@ -27,20 +28,14 @@ use crate::models::{state::AppState, config::Config};
         schemas(
             models::task::Task,
             models::task::CreateTaskSchema,
-            models::user::User,
-            models::user::RegisterUserSchema,
-            models::user::LoginUserSchema,
-            models::user::Claims,
+            models::response::UserResponse,
             models::response::TaskResponse,
             models::response::TaskListResponse,
-            models::response::UserResponse,
-            models::response::LoginResponse,
         )
     ),
     tags(
         (name = "tasks", description = "Task management endpoints"),
-        (name = "users", description = "User management endpoints"),
-        (name = "auth", description = "Authentication endpoints"),
+        (name = "users", description = "User management endpoints (admin only)"),
         (name = "health", description = "Check app health"),
     ),
     security(
@@ -69,24 +64,62 @@ impl utoipa::Modify for SecurityAddon {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging first, before any other operations
+    let logging_config = LoggingConfig::from_env();
+    let _guard = logging_config.init();
+    
+    info!("Starting Task API server");
     
     let config = Config::init();
+    info!("Configuration loaded successfully");
 
-    let db = PgPool::connect(&config.database_url).await?;
+    info!("Connecting to database");
+    let db = PgPool::connect(&config.database_url).await.map_err(|e| {
+        error!("Failed to connect to database: {}", e);
+        e
+    })?;
+    info!("Database connection established");
+    
     let state = Arc::new(AppState {
         db,
-        config,
+        config: config.clone(),
     });
+    info!("Application state initialized");
 
-    let app = routes::create_routes(state.clone())
+    // Initialize Keycloak instance for auth
+    info!("Initializing Keycloak authentication");
+    let keycloak_config = KeycloakConfig::builder()
+        .server(Url::parse(config.keycloak_url.as_str()).unwrap())
+        .realm(config.realm.clone())
+        .build();
+
+    let keycloak_instance = Arc::new(KeycloakAuthInstance::new(keycloak_config));
+    info!("Keycloak authentication initialized");
+
+    let app = routes::create_routes(state.clone(), keycloak_instance)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
 
     let addr = format!("{}:{}", state.config.host, state.config.port);
-    let listener = TcpListener::bind(&addr).await?;
-    println!("Server running at http://{}", addr);
-    println!("Swagger UI available at http://{}/swagger-ui", addr);
+    let listener = TcpListener::bind(&addr).await.map_err(|e| {
+        error!("Failed to bind to address {}: {}", addr, e);
+        e
+    })?;
+    
+    info!(
+        address = %addr,
+        "Task API server listening"
+    );
+    info!(
+        swagger_url = format!("http://{}/swagger-ui", addr),
+        "Swagger UI available"
+    );
 
-    serve(listener, app).await?;
+    info!("Starting HTTP server");
+    serve(listener, app).await.map_err(|e| {
+        error!("Server error: {}", e);
+        e
+    })?;
 
+    info!("Server shutdown");
     Ok(())
 }

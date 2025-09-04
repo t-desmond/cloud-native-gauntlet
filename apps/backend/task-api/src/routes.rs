@@ -1,36 +1,48 @@
 use crate::{
     handlers::{
-        health::health, middleware::{admin_guard, auth_guard}, task::{create_task, delete_task, list_tasks}, user::{delete_user, list_users, login_user, register_user}
+        health::health,
+        logging_middleware::logging_middleware,
+        middleware::admin_guard,
+        task::{create_task, delete_task, list_tasks},
+        user::{delete_user, list_users},
     },
-    models::state::AppState,
+    models::{role::Role, state::AppState},
 };
 use axum::{
     middleware,
     routing::{delete, get, post},
     Router,
 };
+use axum_keycloak_auth::instance::KeycloakAuthInstance;
+use axum_keycloak_auth::{layer::KeycloakAuthLayer, PassthroughMode};
 use std::sync::Arc;
 
-pub fn create_routes(state: Arc<AppState>) -> Router {
-    let public_routes = Router::new()
-        .route("/api/auth/register", post(register_user))
-        .route("/api/auth/login", post(login_user))
-        .route("/api/health", get(health));
+pub fn create_routes(state: Arc<AppState>, keycloak_instance: Arc<KeycloakAuthInstance>) -> Router {
+    let auth_layer: KeycloakAuthLayer<Role> = KeycloakAuthLayer::<Role>::builder()
+        .instance(keycloak_instance)
+        .passthrough_mode(PassthroughMode::Block)
+        .persist_raw_claims(true)
+        .expected_audiences(vec![state.config.audience.clone()])
+        .required_roles(vec![Role::User])
+        .build();
+
+    let public_routes = Router::new().route("/api/health", get(health));
 
     let protected_routes = Router::new()
         .route("/api/tasks", post(create_task).get(list_tasks))
         .route("/api/tasks/{id}", delete(delete_task))
-        .route_layer(middleware::from_fn_with_state(state.clone(), auth_guard));
+        .layer(auth_layer.clone());
 
     let admin_routes = Router::new()
         .route("/api/admin/users", get(list_users))
         .route("/api/admin/users/{id}", delete(delete_user))
-        .route_layer(middleware::from_fn(admin_guard))
-        .route_layer(middleware::from_fn_with_state(state.clone(), auth_guard));
+        .layer(middleware::from_fn(admin_guard))
+        .layer(auth_layer);
 
     Router::new()
         .merge(public_routes)
         .merge(protected_routes)
         .merge(admin_routes)
+        .layer(middleware::from_fn(logging_middleware))
         .with_state(state)
 }

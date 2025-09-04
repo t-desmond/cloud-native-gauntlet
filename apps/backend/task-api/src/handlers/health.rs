@@ -1,5 +1,6 @@
 use axum::Json;
 use serde_json::json;
+use tracing::debug;
 
 #[utoipa::path(
     get,
@@ -9,6 +10,8 @@ use serde_json::json;
     )
 )]
 pub async fn health() -> Json<serde_json::Value> {
+    debug!("Health check requested");
+    
     Json(json!({
         "status": "Active"
     }))

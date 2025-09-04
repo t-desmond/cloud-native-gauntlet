@@ -2,7 +2,7 @@ use crate::models::{
     response::{TaskListResponse, TaskResponse},
     state::AppState,
     task::{CreateTaskSchema, Task},
-    user::User,
+    role::Role,
 };
 use axum::{
     extract::{Extension, Path, State},
@@ -11,6 +11,7 @@ use axum::{
 };
 use serde_json::json;
 use std::sync::Arc;
+use tracing::{info, warn, error, debug};
 
 #[utoipa::path(
     post,
@@ -29,10 +30,33 @@ use std::sync::Arc;
 )]
 #[axum::debug_handler]
 pub async fn create_task(
-    Extension(user): Extension<User>,
+    Extension(token): Extension<axum_keycloak_auth::decode::KeycloakToken<Role>>,
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CreateTaskSchema>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    let user_id_str = &token.subject;
+    
+    // Parse user_id string to UUID
+    let user_id = uuid::Uuid::parse_str(user_id_str).map_err(|e| {
+        error!(
+            user_id_str = %user_id_str,
+            error = %e,
+            "Failed to parse user_id as UUID"
+        );
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "fail",
+                "error": "Invalid user ID format"
+            })),
+        )
+    })?;
+    
+    debug!(
+        user_id = %user_id,
+        task_name = %payload.name,
+        "Creating new task"
+    );
 
     let task = sqlx::query_as::<_, Task>(
         r#"
@@ -41,12 +65,18 @@ pub async fn create_task(
         RETURNING *
         "#,
     )
-    .bind(payload.name)
-    .bind(payload.description)
-    .bind(user.id)
+    .bind(&payload.name)
+    .bind(&payload.description)
+    .bind(user_id)
     .fetch_one(&state.db)
     .await
     .map_err(|e| {
+        error!(
+            user_id = %user_id,
+            task_name = %payload.name,
+            error = %e,
+            "Failed to create task in database"
+        );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
@@ -56,6 +86,13 @@ pub async fn create_task(
             })),
         )
     })?;
+
+    info!(
+        user_id = %user_id,
+        task_id = %task.id,
+        task_name = %task.name,
+        "Task created successfully"
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -80,17 +117,44 @@ pub async fn create_task(
     )
 )]
 pub async fn list_tasks(
-    Extension(user): Extension<User>,
+    Extension(token): Extension<axum_keycloak_auth::decode::KeycloakToken<Role>>,
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let user_id_str = &token.subject;
+    
+    // Parse user_id string to UUID
+    let user_id = uuid::Uuid::parse_str(user_id_str).map_err(|e| {
+        error!(
+            user_id_str = %user_id_str,
+            error = %e,
+            "Failed to parse user_id as UUID"
+        );
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "fail",
+                "error": "Invalid user ID format"
+            })),
+        )
+    })?;
+    
+    debug!(
+        user_id = %user_id,
+        "Listing tasks for user"
+    );
 
     let tasks = sqlx::query_as::<_, Task>(
         "SELECT * FROM tasks WHERE user_id = $1"
     )
-    .bind(user.id)
+    .bind(user_id)
     .fetch_all(&state.db)
     .await
     .map_err(|e| {
+        error!(
+            user_id = %user_id,
+            error = %e,
+            "Failed to fetch tasks from database"
+        );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
@@ -100,6 +164,12 @@ pub async fn list_tasks(
             })),
         )
     })?;
+
+    info!(
+        user_id = %user_id,
+        task_count = tasks.len(),
+        "Tasks retrieved successfully"
+    );
 
     Ok(Json(json!({
         "status": "success",
@@ -125,19 +195,48 @@ pub async fn list_tasks(
     )
 )]
 pub async fn delete_task(
-    Extension(user): Extension<User>,
+    Extension(token): Extension<axum_keycloak_auth::decode::KeycloakToken<Role>>,
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+    let user_id_str = &token.subject;
+    
+    // Parse user_id string to UUID
+    let user_id = uuid::Uuid::parse_str(user_id_str).map_err(|e| {
+        error!(
+            user_id_str = %user_id_str,
+            error = %e,
+            "Failed to parse user_id as UUID"
+        );
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "status": "fail",
+                "error": "Invalid user ID format"
+            })),
+        )
+    })?;
+    
+    debug!(
+        user_id = %user_id,
+        task_id = %id,
+        "Attempting to delete task"
+    );
 
     let result = sqlx::query(
         "DELETE FROM tasks WHERE id = $1 AND user_id = $2"
     )
     .bind(id)
-    .bind(user.id)
+    .bind(user_id)
     .execute(&state.db)
     .await
     .map_err(|e| {
+        error!(
+            user_id = %user_id,
+            task_id = %id,
+            error = %e,
+            "Failed to delete task from database"
+        );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
@@ -149,6 +248,11 @@ pub async fn delete_task(
     })?;
 
     if result.rows_affected() == 0 {
+        warn!(
+            user_id = %user_id,
+            task_id = %id,
+            "Task not found for deletion"
+        );
         return Err((
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -157,6 +261,12 @@ pub async fn delete_task(
             })),
         ));
     }
+
+    info!(
+        user_id = %user_id,
+        task_id = %id,
+        "Task deleted successfully"
+    );
 
     Ok(StatusCode::NO_CONTENT)
 }

@@ -3,7 +3,7 @@ use serde::Serialize;
 use uuid::Uuid;
 use utoipa::{ToSchema, schema};
 
-use crate::models::{task::Task, user::User};
+use crate::models::task::Task;
 
 #[derive(Serialize, ToSchema)]
 pub struct UserResponse {
@@ -34,11 +34,6 @@ pub struct TaskResponse {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Serialize, ToSchema)]
-pub struct LoginResponse {
-    pub user: UserResponse,
-    pub token: String,
-}
 
 #[derive(Serialize, ToSchema)]
 pub struct TaskListResponse {
@@ -46,19 +41,6 @@ pub struct TaskListResponse {
     pub total: usize
 }
 
-impl From<User> for UserResponse {
-    fn from(user: User) -> Self {
-        Self {
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            verified: user.verified,
-            created_at: user.created_at,
-            updated_at: user.created_at,
-        }
-    }
-}
 
 impl From<Task> for TaskResponse {
   fn from(task: Task) -> Self {

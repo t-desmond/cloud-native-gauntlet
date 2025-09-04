@@ -1,147 +1,62 @@
-use crate::models::{
-    response::{LoginResponse, UserResponse},
-    state::AppState,
-    user::{Claims, LoginUserSchema, RegisterUserSchema, User},
-};
+use crate::models::config::Config;
+use crate::models::{state::AppState, response::UserResponse};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::IntoResponse,
     Json,
 };
-use bcrypt::{hash, verify, DEFAULT_COST};
-use jsonwebtoken::{encode, EncodingKey, Header};
+use chrono::{TimeZone, Utc};
+use reqwest;
 use serde_json::json;
 use std::sync::Arc;
+use tracing::{info, warn, error, debug};
 
-#[utoipa::path(
-    post,
-    path = "/api/auth/register",
-    tag = "auth",
-    request_body = RegisterUserSchema,
-    responses(
-        (status = 201, description = "User registered successfully", body = UserResponse),
-        (status = 400, description = "Invalid input"),
-        (status = 500, description = "Internal server error")
-    )
-)]
-pub async fn register_user(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<RegisterUserSchema>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let hashed_password = hash(&payload.password, DEFAULT_COST).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "status": "fail",
-                "error": "Failed to hash password"
-            })),
-        )
-    })?;
+async fn get_admin_token(config: &Config) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    debug!("Requesting admin token from Keycloak");
+    
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/realms/{}/protocol/openid-connect/token",
+        config.keycloak_url,
+        config.realm
+    );
+    let mut params = std::collections::HashMap::new();
+    params.insert("grant_type", "client_credentials".to_string());
+    params.insert("client_id", config.admin_client_id.clone());
+    params.insert("client_secret", config.admin_client_secret.clone());
 
-    let user = sqlx::query_as::<_, User>(
-        r#"
-      INSERT INTO users (name, email, password, role, verified, created_at, updated_at)
-      VALUES ($1, $2, $3, 'user', false, NOW(), NOW())
-      RETURNING *
-      "#,
-    )
-    .bind(payload.name)
-    .bind(payload.email)
-    .bind(hashed_password)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "status": "fail",
-                "error": "Failed to register user",
-                "details": e.to_string()
-            })),
-        )
-    })?;
-
-    Ok((StatusCode::CREATED, Json(UserResponse::from(user))))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/auth/login",
-    tag = "auth",
-    request_body = LoginUserSchema,
-    responses(
-        (status = 200, description = "User logged in successfully", body = LoginResponse),
-        (status = 401, description = "Invalid credentials"),
-        (status = 500, description = "Internal server error")
-    )
-)]
-pub async fn login_user(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<LoginUserSchema>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = $1")
-        .bind(&payload.email)
-        .fetch_one(&state.db)
+    let res = client.post(&url)
+        .form(&params)
+        .send()
         .await
         .map_err(|e| {
+            error!(error = %e, "Failed to request admin token from Keycloak");
             (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({
-                    "status": "fail",
-                    "error": "Invalid email or password",
-                    "details": e.to_string()
-                })),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "fail", "error": "Failed to get admin token", "details": e.to_string()})),
             )
         })?;
 
-    let is_valid = verify(&payload.password, &user.password).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "status": "fail",
-                "error": "Failed to verify password",
-                "details": e.to_string()
-            })),
-        )
-    })?;
-
-    if !is_valid {
+    if !res.status().is_success() {
+        error!(status = %res.status(), "Invalid admin credentials for Keycloak");
         return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "status": "fail",
-                "error": "Invalid email or password"
-            })),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "fail", "error": "Invalid admin credentials"})),
         ));
     }
 
-    let now = chrono::Utc::now();
-    let claims = Claims {
-        sub: user.id.to_string(),
-        iat: now.timestamp() as usize,
-        exp: (now + chrono::Duration::hours(24)).timestamp() as usize,
-    };
+    let token_res: serde_json::Value = res.json().await.map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({"status": "fail", "error": "Failed to parse token", "details": e.to_string()})),
+    ))?;
 
-    let token = encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(state.config.jwt_secret.as_ref()),
-    )
-    .map_err(|_| {
-        (
+    token_res["access_token"]
+        .as_str()
+        .map(|t| t.to_string())
+        .ok_or((
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({
-                "status": "fail",
-                "error": "Failed to generate token"
-            })),
-        )
-    })?;
-
-    Ok(Json(LoginResponse {
-        user: UserResponse::from(user),
-        token,
-    }))
+            Json(json!({"status": "fail", "error": "No access token in response"})),
+        ))
 }
 
 #[utoipa::path(
@@ -160,24 +75,74 @@ pub async fn login_user(
 )]
 pub async fn list_users(
     State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let users = sqlx::query_as::<_, User>("SELECT * FROM users")
-        .fetch_all(&state.db)
+) -> Result<Json<Vec<UserResponse>>, (StatusCode, Json<serde_json::Value>)> {
+    debug!("Listing users from Keycloak");
+    
+    let token = get_admin_token(&state.config).await?;
+
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/admin/realms/{}/users",
+        state.config.keycloak_url, state.config.realm
+    );
+
+    let res = client.get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/json")
+        .send()
         .await
-        .map_err(|_| {
+        .map_err(|e| {
+            error!(error = %e, "Failed to fetch users from Keycloak API");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "status": "fail",
-                    "error": "Failed to fetch users"
-                })),
+                Json(json!({"status": "fail", "error": "Failed to fetch users from Keycloak", "details": e.to_string()})),
             )
         })?;
 
-    let user_responses = users
+    if !res.status().is_success() {
+        error!(status = %res.status(), "Keycloak API error when fetching users");
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "fail", "error": "Keycloak API error"})),
+        ));
+    }
+
+    let kc_users: Vec<serde_json::Value> = res.json().await.map_err(|e| {
+        error!(error = %e, "Failed to parse users JSON from Keycloak");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "fail", "error": "Failed to parse users", "details": e.to_string()})),
+        )
+    })?;
+
+    let user_responses: Vec<UserResponse> = kc_users
         .into_iter()
-        .map(UserResponse::from)
-        .collect::<Vec<_>>();
+        .map(|u| {
+            let id_str = u["id"].as_str().unwrap_or("");
+            let id = uuid::Uuid::parse_str(id_str).unwrap_or(uuid::Uuid::nil());
+            let role = u["role"].to_string().into();
+            let name = u["username"].as_str().unwrap_or("unknown").to_string();
+            let email = u["email"].as_str().unwrap_or("").to_string();
+            let created_ts = u["createdTimestamp"].as_i64().unwrap_or(0);
+            let created_at = Some(Utc.timestamp_millis_opt(created_ts).unwrap());
+
+            UserResponse {
+                id,
+                name,
+                email,
+                role,
+                verified: true,
+                created_at,
+                updated_at: created_at,
+            }
+        })
+        .collect();
+
+    info!(
+        user_count = user_responses.len(),
+        "Users retrieved successfully from Keycloak"
+    );
+
     Ok(Json(user_responses))
 }
 
@@ -202,32 +167,89 @@ pub async fn list_users(
 pub async fn delete_user(
     State(state): State<Arc<AppState>>,
     Path(id): Path<uuid::Uuid>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let result = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(id)
-        .execute(&state.db)
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    debug!(
+        user_id = %id,
+        "Attempting to delete user"
+    );
+    
+    let token = get_admin_token(&state.config).await?;
+
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/admin/realms/{}/users/{}",
+        state.config.keycloak_url, state.config.realm, id
+    );
+
+    let res = client.delete(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
         .await
-        .map_err(|_| {
+        .map_err(|e| {
+            error!(
+                user_id = %id,
+                error = %e,
+                "Failed to delete user from Keycloak API"
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "status": "fail",
-                    "error": "Failed to delete user"
-                })),
+                Json(json!({"status": "fail", "error": "Failed to delete user from Keycloak", "details": e.to_string()})),
             )
         })?;
 
-    if result.rows_affected() == 0 {
+    if res.status() == StatusCode::NOT_FOUND {
+        warn!(
+            user_id = %id,
+            "User not found in Keycloak for deletion"
+        );
         return Err((
             StatusCode::NOT_FOUND,
-            Json(json!({
-                "status": "fail",
-                "error": "User not found"
-            })),
+            Json(json!({"status": "fail", "error": "User not found in Keycloak"})),
         ));
-    }
+    } else if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_else(|_| "<no body>".to_string());
+        error!(
+            user_id = %id,
+            status = %status,
+            body = %text,
+            "Keycloak API error when deleting user"
+        );
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"status": "fail", "error": "Keycloak API error", "details": text})),
+        ));
+    }    
 
-    Ok(
-        Json(json!({"status": "OK", "message": format!("user {} deleted successfully", id)})),
-    )
+    // Clean up tasks
+    debug!(
+        user_id = %id,
+        "Cleaning up user tasks from database"
+    );
+    
+    let result = sqlx::query("DELETE FROM tasks WHERE user_id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| {
+            error!(
+                user_id = %id,
+                error = %e,
+                "Failed to clean up user tasks from database"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"status": "fail", "error": "Failed to clean up tasks", "details": e.to_string()})),
+            )
+        })?;
+
+    info!(
+        user_id = %id,
+        tasks_deleted = result.rows_affected(),
+        "User and associated tasks deleted successfully"
+    );
+
+    Ok(Json(
+        json!({"status": "success", "message": format!("User {} deleted successfully", id)}),
+    ))
 }
