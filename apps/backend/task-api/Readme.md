@@ -1,17 +1,18 @@
-# Rust Backend API with Swagger UI Documentation
+# Task API - Rust Backend with Keycloak Authentication
 
-A RESTful API built with Rust using the **Axum** framework, featuring comprehensive **Swagger UI documentation**.
+A RESTful API built with Rust using the **Axum** framework, featuring Keycloak authentication, comprehensive logging, and Swagger UI documentation.
 
 ## Features
 
-* User authentication (registration, login)
-* Task management (create, list, delete)
-* Admin user management (list, delete users)
-* PostgreSQL database integration
-* JWT-based authentication
-* Comprehensive API documentation with Swagger UI
-* Docker and Docker Compose support for easy deployment
-* PgAdmin for database management
+* **Keycloak Authentication**: JWT token-based authentication with role-based access control
+* **Task Management**: Create, list, and delete tasks with user isolation
+* **Admin User Management**: List and delete users (admin-only endpoints)
+* **PostgreSQL Integration**: Database operation
+* **Structured Logging**: Comprehensive logging with tracing and configurable output formats
+
+* **API Documentation**: Interactive Swagger UI with authentication support
+* **Cloud Native**: Kubernetes deployment ready with proper service configuration
+* **Docker Support**: Container deployment with Docker and Docker Compose
 
 ---
 
@@ -33,7 +34,28 @@ A RESTful API built with Rust using the **Axum** framework, featuring comprehens
 cp .env.example .env
 ```
 
-2. Edit `.env` with your configuration:
+2. Edit `.env` with your configuration, including Keycloak settings:
+
+```bash
+# Database Configuration
+DATABASE_URL=postgresql://admin:password123@localhost:5432/database_name
+
+# Server Configuration
+APP_HOST=localhost
+APP_PORT=3000
+
+# Keycloak Authentication
+KEYCLOAK_URL=http://localhost:8080
+KEYCLOAK_REALM=task-realm
+KEYCLOAK_ADMIN_CLIENT_ID=admin-cli
+KEYCLOAK_ADMIN_CLIENT_SECRET=your-admin-secret
+KEYCLOAK_AUDIENCE=task-api-client
+
+# Logging Configuration
+LOG_LEVEL=info
+LOG_FORMAT=pretty
+LOG_OUTPUT=stdout
+```
 
 ---
 
@@ -133,27 +155,93 @@ http://localhost:3000/api-docs/openapi.json
 
 ### Authentication
 
-Most endpoints require **JWT authentication**. After login, include the token in the `Authorization` header:
+The API uses **Keycloak for authentication** with JWT tokens. Most endpoints require authentication with proper role-based access control.
 
+**For complete Keycloak setup instructions, see [../../auth/README.md](../../auth/README.md)**
+
+#### Getting a JWT Token
+
+```bash
+# Get token from Keycloak
+TOKEN=$(curl -s -X POST "http://localhost:8080/realms/task-realm/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=password" \
+  -d "client_id=task-api-client" \
+  -d "username=testuser" \
+  -d "password=testpass" | jq -r .access_token)
 ```
-Authorization: Bearer <your-jwt-token>
+
+#### Using the Token
+
+Include the JWT token in the `Authorization` header:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/api/tasks
 ```
 
 
 ### API Endpoints
 
-#### Authentication
+#### Health Check
 
-- `POST /api/auth/register` - Register a new user
-- `POST /api/auth/login` - Login and receive a JWT token
+- `GET /api/health` - Application health check (no authentication required)
 
-#### Tasks
+#### Tasks (User Role Required)
 
-- `POST /api/tasks` - Create a new task (authenticated)
-- `GET /api/tasks` - List all tasks for the current user (authenticated)
-- `DELETE /api/tasks/{id}` - Delete a task by ID (authenticated)
+- `POST /api/tasks` - Create a new task
+- `GET /api/tasks` - List all tasks for the current user
+- `DELETE /api/tasks/{id}` - Delete a task by ID
 
-#### Admin
+#### Admin (Admin Role Required)
 
-- `GET /api/admin/users` - List all users (admin only)
-- `DELETE /api/admin/users/{id}` - Delete a user by ID (admin only)
+- `GET /api/admin/users` - List all users from Keycloak
+- `DELETE /api/admin/users/{id}` - Delete a user by ID (also cleans up associated tasks)
+
+#### Authentication Features
+
+- **JWT Token Validation**: All protected endpoints validate JWT tokens from Keycloak
+- **Role-Based Access**: Different endpoints require different Keycloak roles
+- **UUID Handling**: Proper conversion of user IDs from JWT claims to UUID database types
+- **Structured Logging**: All requests and authentication events are logged
+
+## Logging
+
+The application implements comprehensive structured logging using the Rust `tracing` ecosystem.
+
+### Features
+
+- **Structured Output**: JSON or pretty-printed logs
+- **Request Tracking**: HTTP request/response logging with timing
+- **Authentication Events**: Login attempts and token validation
+- **Database Operations**: Task creation, updates, and errors
+- **UUID Operations**: User ID parsing and validation events
+- **Error Tracking**: Detailed error context and stack traces
+
+### Configuration
+
+```bash
+# Log level (trace, debug, info, warn, error)
+LOG_LEVEL=info
+
+# Output format (pretty for development, json for production)
+LOG_FORMAT=json
+
+# Output destination (stdout or file path)
+LOG_OUTPUT=stdout
+```
+
+### Example Log Output
+
+```json
+{
+  "timestamp": "2024-01-15T10:30:00.123Z",
+  "level": "INFO",
+  "fields": {
+    "user_id": "123e4567-e89b-12d3-a456-426614174000",
+    "task_id": "987fcdeb-51a2-43d1-9c4e-123456789abc",
+    "task_name": "Complete project"
+  },
+  "target": "task_api::handlers::task",
+  "message": "Task created successfully"
+}
+```

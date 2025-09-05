@@ -1,19 +1,21 @@
 # Cloud Native Gauntlet - Applications
 
-This directory contains the applications that make up the Cloud Native Gauntlet project, including a PostgreSQL database cluster and a Rust-based task management API.
+This directory contains the applications that make up the Cloud Native Gauntlet project, including Keycloak authentication, PostgreSQL database cluster, and a Rust-based task management API.
 
 ## Architecture Overview
 
 The application stack consists of:
 
-- **Database Layer**: CloudNativePG PostgreSQL cluster with 3 instances
-- **Backend API**: Rust-based task management API with authentication
+- **Authentication Layer**: Keycloak identity and access management
+- **Database Layer**: CloudNativePG PostgreSQL cluster
+- **Backend API**: Rust-based task management API with JWT authentication
 - **Monitoring**: Prometheus and Grafana for observability
 
 ### Namespace Isolation
 
 The application follows Kubernetes best practices with proper namespace isolation:
 
+- **`keycloak` namespace**: Contains Keycloak authentication server and related resources
 - **`database` namespace**: Contains all database-related resources (secrets, PostgreSQL cluster)
 - **`backend` namespace**: Contains all backend API resources (deployment, service, ingress, configs)
 - **`monitoring` namespace**: Contains monitoring stack (Prometheus, Grafana)
@@ -28,6 +30,14 @@ This separation ensures:
 
 ```
 apps/
+├── auth/               # Authentication components (namespace: keycloak)
+│   ├── README.md              # Keycloak setup and authentication guide
+│   ├── keycloak_auth_methods.md # Authentication flow documentation
+│   ├── keycloak-deployment.yaml # Keycloak server deployment
+│   ├── keycloak-service.yaml   # Keycloak service
+│   ├── keycloak-configmap.yaml # Keycloak configuration
+│   ├── keycloak-secret.yaml    # Keycloak secrets
+│   └── keycloak-ingress.yaml   # Keycloak ingress
 ├── database/           # Database components (namespace: database)
 │   ├── db-secret.yaml      # Database credentials
 │   ├── cnpg-1.27.0.yaml   # CloudNativePG operator
@@ -139,6 +149,23 @@ kubectl apply -f apps/backend/task-api-ingress.yaml
 kubectl wait --for=condition=available --timeout=300s deployment/task-api -n backend
 ```
 
+#### 3. Auth Components
+
+```bash
+# Create namespace
+kubectl create namespace keycloak
+
+# Deploy in order
+kubectl apply -f apps/auth/keycloak-secret.yaml
+kubectl apply -f apps/auth/keycloak-configmap.yaml
+kubectl apply -f apps/auth/keycloak-deployment.yaml
+kubectl apply -f apps/auth/keycloak-service.yaml
+kubectl apply -f apps/auth/keycloak-ingress.yaml
+
+# Wait for deployment to be ready
+kubectl wait --for=condition=available --timeout=300s deployment/keycloak -n keycloak
+```
+
 **Note**: All kubectl commands must be run on the master VM where the K3s cluster is running. The manifests now include proper namespace definitions, so `-n` flags are not needed. The deploy script automatically uses the correct kubeconfig path (`/home/ubuntu/.kube/config`) for all kubectl operations. The setup script automatically mounts the project directory to `/home/ubuntu/projects/` on the master VM.
 
 ## Domain Configuration
@@ -163,14 +190,31 @@ Once deployed, the API is accessible at:
 
 ### Authentication
 
-The API includes a seeded admin user:
+The application uses Keycloak for identity and access management with JWT-based authentication. The Task API integrates with Keycloak for user authentication and role-based access control.
+
+**For complete Keycloak setup and authentication instructions, see [auth/README.md](auth/README.md)**
+
+Quick authentication example:
 
 ```bash
-# Login
-curl -X POST http://task-api.local/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "admin@example.com", "password": "adminpassword"}'
+# Get JWT token from Keycloak
+TOKEN=$(curl -s -X POST "http://keycloak.local/realms/task-realm/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=password" \
+  -d "client_id=task-api-client" \
+  -d "username=testuser" \
+  -d "password=testpass" | jq -r .access_token)
+
+# Use token for API calls
+curl -H "Authorization: Bearer $TOKEN" http://task-api.local/api/tasks
 ```
+
+**Authentication Features:**
+- JWT token-based authentication
+- Role-based access control (Admin/User)
+- Keycloak integration for user management
+- UUID-based user identification
+- Structured logging for authentication events
 
 ### Database Access
 

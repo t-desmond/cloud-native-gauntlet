@@ -6,9 +6,11 @@ A comprehensive cloud-native project demonstrating Kubernetes deployment, monito
 
 This project sets up a complete cloud-native environment with:
 - **Infrastructure**: Multipass VMs running K3s Kubernetes cluster
-- **Applications**: Sample applications deployed to Kubernetes
-- **Monitoring**: Prometheus and Grafana for observability
+- **Authentication**: Keycloak identity and access management
+- **Applications**: Production-ready Task API with PostgreSQL database
+- **Monitoring**: Prometheus and Grafana for observability (templates provided)
 - **Automation**: Terraform and Ansible for infrastructure management
+- **GitOps**: ArgoCD for continuous deployment
 
 ## Architecture
 
@@ -24,14 +26,19 @@ This project sets up a complete cloud-native environment with:
          │                       │
          └───────────────────────┘
                     │
-         ┌─────────────────┐
-         │   Applications  │
-         │                 │
-         │ - App1          │
-         │ - App2          │
-         │ - Prometheus    │
-         │ - Grafana       │
-         └─────────────────┘
+    ┌───────────────────────────────────┐
+    │          Applications             │
+    │                                   │
+    │  ┌─────────────┐ ┌─────────────┐  │
+    │  │  Keycloak   │ │  Task API   │  │
+    │  │   (Auth)    │ │ (Backend)   │  │
+    │  └─────────────┘ └─────────────┘  │
+    │                                   │
+    │  ┌─────────────┐ ┌─────────────┐  │
+    │  │ PostgreSQL  │ │ Monitoring  │  │
+    │  │ (Database)  │ │   Stack     │  │
+    │  └─────────────┘ └─────────────┘  │
+    └───────────────────────────────────┘
 ```
 
 ## Prerequisites
@@ -84,14 +91,30 @@ cloud-native-gauntlet/
 │   ├── ansible/                 # Ansible playbooks for K3s setup
 │   └── terraform/               # Terraform for VM creation
 ├── apps/                        # Application deployments
-│   ├── app1/                    # Sample application 1 with task-api implementation
-│   │   └── task-api/            # Rust Axum-based task management API
-│   └── app2/                    # Sample application 2 (placeholder)
+│   ├── README.md                # Application deployment guide
+│   ├── auth/                    # Keycloak authentication (keycloak namespace)
+│   │   ├── README.md            # Keycloak setup and auth guide
+│   │   └── keycloak-*.yaml      # Keycloak deployment manifests
+│   ├── database/                # Database components (database namespace)
+│   │   ├── db-secret.yaml       # Database credentials
+│   │   ├── cnpg-1.27.0.yaml     # CloudNativePG operator
+│   │   └── cluster-app.yaml     # PostgreSQL cluster definition
+│   └── backend/                 # Backend API components (backend namespace)
+│       ├── task-api-*.yaml      # Task API deployment manifests
+│       └── task-api/            # Rust Axum-based Task API source code
+│           ├── README.md        # Task API documentation
+│           ├── migrations/      # Sql migrations
+│           ├── src/             # Rust source code with logging & auth
+│           ├── Cargo.toml       # Rust dependencies
+│           └── Dockerfile       # Container definition
 ├── monitoring/                  # Monitoring stack (templates - not yet implemented)
 ├── gitops/                      # GitOps configuration with ArgoCD
+│   ├── README.md                # GitOps documentation
 │   ├── argocd/                  # ArgoCD application definitions
 │   └── scripts/                 # GitOps automation scripts
 ├── scripts/                     # Automation scripts
+│   ├── setup.sh                 # Complete infrastructure setup
+│   └── deploy.sh                # Application deployment script
 └── kustomization/               # Environment-specific configs (templates - not yet implemented)
 ```
 
@@ -103,14 +126,23 @@ cloud-native-gauntlet/
 - **Multipass**: Lightweight VM provider for development
 
 ### Applications
-- **App1**: Task management API built with Rust and Axum (fully implemented)
-  - RESTful API with JWT authentication
-  - PostgreSQL database integration
+- **Authentication**: Keycloak identity and access management (fully implemented)
+  - JWT token-based authentication
+  - Role-based access control (Admin/User)
+  - OAuth2/OpenID Connect support
+  - Admin console for user management
+- **Task API**: RESTful API built with Rust and Axum (fully implemented)
+  - Keycloak authentication integration
+  - PostgreSQL database with UUID handling
+  - Comprehensive structured logging system
   - Swagger UI documentation
-  - Docker and Docker Compose support
-- **App2**: Placeholder for future application implementation
-- **Prometheus**: Metrics collection (template - not yet implemented)
-- **Grafana**: Metrics visualization (template - not yet implemented)
+  - Role-based endpoint protection
+  - Cloud-native deployment ready
+- **Database**: PostgreSQL cluster using CloudNativePG operator
+  - High-availability configuration
+  - Automated backups and recovery
+  - Kubernetes-native management
+- **Monitoring**: Prometheus and Grafana (templates provided, not yet implemented)
 
 ### Automation
 - **setup.sh**: Complete automated setup script (cross-platform)
@@ -127,21 +159,6 @@ cloud-native-gauntlet/
 - **Application Definitions**: ArgoCD application configurations for App1 and Monitoring
 - **Automated Sync**: Automatic deployment from Git changes (when fully implemented)
 
-## Development
-
-### Adding New Applications
-1. Replace placeholder files in `apps/app2/` with your actual Kubernetes manifests
-2. Update deployment scripts as needed
-3. For App1, the task-api is already implemented but can be extended:
-   - Located in `apps/app1/task-api/`
-   - Built with Rust and Axum framework
-   - Features JWT authentication and PostgreSQL integration
-
-### Modifying Infrastructure
-1. Edit Terraform files in `infra/terraform/`
-2. Update Ansible playbooks in `infra/ansible/`
-3. Test changes by running `./scripts/setup.sh`
-
 ## Troubleshooting
 
 ### Common Issues
@@ -157,22 +174,15 @@ ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
 
 #### 3. Cluster Access Issues
 ```bash
-# Check cluster status
-kubectl cluster-info
-kubectl get nodes
-
 # Check VM connectivity
 ping <master-ip>
 ```
 
-#### 4. Cleanup and Restart
+#### 4. Cleanup
 ```bash
 # Destroy infrastructure
 cd infra/terraform
 terraform destroy -auto-approve
-
-# Restart setup
-./scripts/setup.sh
 ```
 
 ## Contributing
@@ -182,7 +192,3 @@ terraform destroy -auto-approve
 3. Make your changes
 4. Test thoroughly
 5. Submit a pull request
-
-## License
-
-[Add your license here] 
