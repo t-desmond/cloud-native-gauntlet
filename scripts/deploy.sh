@@ -47,7 +47,9 @@ check_ssh_access() {
 configure_hosts_file() {
     local MASTER_IP
     MASTER_IP=$(get_master_ip)
-    print_status "Configuring /etc/hosts for task-api.local..."
+    print_status "Configuring /etc/hosts for task-api.local and keycloak.local..."
+
+    # Check if task-api.local exists in /etc/hosts
     if grep -q "task-api.local" /etc/hosts; then
         if [[ "$(uname)" == "Darwin" ]]; then
             sudo sed -i '' "s/.*task-api.local/$MASTER_IP task-api.local keycloak.local/" /etc/hosts
@@ -55,6 +57,7 @@ configure_hosts_file() {
             sudo sed -i "s/.*task-api.local/$MASTER_IP task-api.local keycloak.local/" /etc/hosts
         fi
     else
+        # Add both task-api.local and keycloak.local to /etc/hosts
         echo "$MASTER_IP task-api.local keycloak.local" | sudo tee -a /etc/hosts >/dev/null
     fi
 }
@@ -65,30 +68,6 @@ run_kubectl_on_master() {
     MASTER_IP=$(get_master_ip)
     ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP \
         "kubectl --kubeconfig /home/ubuntu/.kube/config $1"
-}
-
-# Update registry IPs in manifests
-update_registry_ips() {
-    local REGISTRY_IP
-    REGISTRY_IP=$(get_registry_ip)
-    print_status "Updating registry IPs in manifests to $REGISTRY_IP:5000..."
-
-    local MASTER_IP
-    MASTER_IP=$(get_master_ip)
-
-    local manifests=(
-        "/home/ubuntu/projects/apps/database/cluster-app.yaml"
-        "/home/ubuntu/projects/apps/backend/task-api-deployment.yaml"
-        "/home/ubuntu/projects/apps/database/cnpg-1.27.0.yaml"
-    )
-
-    for manifest in "${manifests[@]}"; do
-        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "
-            TMPFILE=\$(mktemp)
-            sed 's/192\\.168\\.64\\.[0-9]*:5000/$REGISTRY_IP:5000/g' '$manifest' > \$TMPFILE
-            mv \$TMPFILE '$manifest'
-        "
-    done
 }
 
 # Deploy database components (CNPG)
@@ -250,7 +229,6 @@ main() {
     echo ""
     check_ssh_access
     configure_hosts_file
-    update_registry_ips
     deploy_database
     deploy_backend
     deploy_auth
