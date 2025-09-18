@@ -1,6 +1,15 @@
 # Cloud Native Gauntlet
 
-A comprehensive cloud-native project demonstrating Kubernetes deployment, monitoring, and infrastructure automation using K3s and Multipass.
+Cloud-native reference project running on K3s/Multipass. This top section is intentionally minimal; detailed docs are linked below.
+
+## Quick links
+
+- Project status: see `docs/PROJECT_STATUS.md`
+- Apps overview and manual deploy steps: see `apps/README.md`
+- GitOps and infra manifests: see `gitops/infra/README.md`
+- Deploy script entry point: `scripts/deploy.sh`
+
+---
 
 ## Project Overview
 
@@ -48,6 +57,7 @@ This project sets up a complete cloud-native environment with:
 - Ansible installed
 - kubectl installed
 - SSH key pair generated (`~/.ssh/id_rsa` and `~/.ssh/id_rsa.pub`)
+> Note: Pre-requisites are automatically installed by `scripts/setup.sh`
 
 ## Quick Start
 

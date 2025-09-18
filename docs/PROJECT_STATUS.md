@@ -12,6 +12,7 @@
 - **Master Node Setup**: ✅ K3s control plane installed and configured
 - **Worker Node Setup**: ✅ Worker node joined to cluster successfully
 - **Cluster Verification**: ✅ Both nodes show as Ready in kubectl
+- **Ingress Controller (Traefik)**: ✅ Installed by K3s and in use for services
 - **kubectl Configuration**: ✅ Local kubectl configured to access cluster
 
 ### Automation
@@ -19,6 +20,7 @@
 - **Terraform Configuration**: ✅ VM creation with variables and outputs
 - **Ansible Playbooks**: ✅ K3s installation and worker joining
 - **Error Handling**: ✅ Comprehensive troubleshooting and validation
+ - **deploy.sh (GitOps foundation)**: ✅ Deploys CNPG operator, Gitea, ArgoCD, and Argo CD Applications
 
 ### Documentation
 - **README.md**: ✅ Updated with accurate automated setup instructions
@@ -42,7 +44,10 @@
 - **Network**: Dynamic IP allocation
 - **Access**: kubectl configured and functional
 - **Task Management API**: App1 task-api implemented with Rust/Axum
-- **GitOps**: ArgoCD installation script and application definitions implemented
+- **GitOps**: 
+  - **ArgoCD**: ✅ Deployed via `scripts/deploy.sh` (namespace `argocd`)
+  - **Ingress**: ✅ Accessible via `argocd.local` (Traefik)
+  - **Applications**: ✅ Linkerd, Database (CNPG), Keycloak, Task API, grafana and prometheus defined and applied
 
 ### Verified Functionality
 ```bash
@@ -58,15 +63,10 @@ kubectl cluster-info
 ## 📋 Remaining Tasks
 
 ### GitOps Implementation
-- **ArgoCD**: Install and configure ArgoCD for GitOps (installation script implemented)
-- **Repository Structure**: Set up GitOps repository structure (application definitions created)
-- **Continuous Deployment**: Configure automatic deployments from Git (partially implemented)
-- **GitOps Workflow**: Implement proper GitOps practices with ArgoCD (installation and configuration implemented)
 
 ### Application Deployment
-- **App1**: Partially implemented (task-api application in Rust/Axum)
-- **App2**: Replace placeholder with actual Kubernetes manifests
-- **deploy.sh**: Implement actual application deployment logic
+- **Task API**: Implemented; ensure ArgoCD syncs from the correct repo/branch
+- **Runner**: Gitea Actions runner requires registration token (currently manual via UI, prompted by `deploy.sh`)
 
 ### Monitoring Stack
 - **Prometheus**: Replace placeholder with actual configuration
@@ -85,10 +85,10 @@ kubectl cluster-info
 ## 🚨 Missing Cloud-Native Components
 
 ### Networking & Ingress
-- **Ingress Controller**: No ingress controller (NGINX, Traefik, etc.)
-- **Load Balancer**: No load balancer configuration
-- **Service Mesh**: No service mesh (Istio, Linkerd, etc.)
-- **Network Policies**: No network security policies
+- **Ingress Controller**: Present (Traefik via K3s)
+- **Gitea/ArgoCD Ingress**: Present; hosts mapped via `/etc/hosts` by `deploy.sh`
+- **Service Mesh**: Linkerd app definition present; validate deployment and mTLS config
+- **Network Policies**: Not yet defined
 
 ### Security & Secrets Management
 - **Secrets Management**: No external secrets manager (HashiCorp Vault, etc.)
@@ -102,9 +102,9 @@ kubectl cluster-info
 - **Backup Strategy**: No backup and disaster recovery
 
 ### CI/CD Pipeline
-- **CI/CD Tools**: No continuous integration setup (Jenkins, GitHub Actions, etc.)
-- **Container Registry**: No container registry configuration
-- **Build Automation**: No automated build processes
+- **CI/CD Tools**: Gitea + Actions runner planned; runner token currently manual
+- **Container Registry**: Local registry VM present (Multipass `docker-registry`), used by images like `registry.local:5000/act_runner:latest`
+- **Build Automation**: To be wired via Gitea Actions after runner registration
 
 ### Observability & Logging
 - **Logging Stack**: No centralized logging (ELK, Fluentd, etc.)
@@ -119,13 +119,12 @@ kubectl cluster-info
 
 ## 🎯 Next Steps Priority
 
-1. **High Priority**: Implement GitOps with ArgoCD
-2. **High Priority**: Replace placeholder application files with actual manifests
-3. **High Priority**: Add Ingress Controller and Load Balancer
-4. **Medium Priority**: Implement monitoring stack (Prometheus/Grafana)
-5. **Medium Priority**: Add Security components (RBAC, Network Policies)
-6. **Low Priority**: Add Storage and Backup solutions
-7. **Low Priority**: Implement CI/CD pipeline
+1. **High Priority**: Connect ArgoCD Applications to Gitea repos and enable sync
+2. **High Priority**: Automate Gitea headless setup and runner token generation (replace manual UI step)
+3. **High Priority**: Implement monitoring stack (Prometheus/Grafana)
+4. **Medium Priority**: Add Security components (RBAC, Network Policies)
+5. **Medium Priority**: Add Storage and Backup solutions
+6. **Low Priority**: Implement CI/CD pipeline
 
 ## 📊 Project Metrics
 

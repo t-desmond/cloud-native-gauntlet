@@ -245,3 +245,10 @@ LOG_OUTPUT=stdout
   "message": "Task created successfully"
 }
 ```
+
+## Known CI workflow issues
+
+The repository includes a Gitea Actions workflow at `gitops/app-source/.gitea/workflows/build-deploy.yml`.
+
+- DNS pull failure: The workflow intermittently fails to pull the repository due to DNS resolution issues. This is a known environment problem and not yet resolved.
+- Manifest tag update permissions: After building and pushing the image, the workflow does not update the Kubernetes manifest to point to the `latest` tag due to insufficient permissions. This is pending resolution.
