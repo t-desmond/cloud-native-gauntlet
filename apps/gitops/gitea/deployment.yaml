@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea
+  namespace: gitea
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitea
+  template:
+    metadata:
+      labels:
+        app: gitea
+    spec:
+      containers:
+      - name: gitea
+        image: registry.local:5000/gitea:latest
+        ports:
+        - containerPort: 3000
+        - containerPort: 22
+        envFrom:
+        - secretRef:
+            name: gitea-app-secret
+        volumeMounts:
+        - name: gitea-data
+          mountPath: /data
+      volumes:
+      - name: gitea-data
+        persistentVolumeClaim:
+          claimName: gitea-pvc

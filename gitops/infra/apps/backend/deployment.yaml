@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: task-api
+  namespace: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: task-api
+  template:
+    metadata:
+      labels:
+        app: task-api
+    spec:
+      initContainers:
+      - name: wait-for-keycloak
+        image: curlimages/curl:latest
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Waiting for Keycloak to be ready..."
+          until curl -f http://keycloak.keycloak.svc.cluster.local/realms/master/.well-known/openid-configuration; do
+            echo "Keycloak not ready, waiting 5 seconds..."
+            sleep 5
+          done
+          echo "Keycloak is ready!"
+      containers:
+      - name: task-api
+        image: registry.local:5000/task-api:v2
+        ports:
+        - containerPort: 3000
+        envFrom:
+        - configMapRef:
+            name: task-api-config
+        - secretRef:
+            name: task-api-secrets

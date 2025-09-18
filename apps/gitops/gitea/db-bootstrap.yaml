@@ -1,0 +1,16 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: gitea-db
+  namespace: gitea
+spec:
+  instances: 1
+  imageName: registry.local:5000/postgresql:16.4
+  storage:
+    size: 5Gi
+  bootstrap:
+    initdb:
+      database: gitea-db
+      owner: admin
+      secret:
+        name: gitea-db-secret

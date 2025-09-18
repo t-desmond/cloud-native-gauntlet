@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitea-token
+  namespace: gitea
+type: Opaque
+stringData:
+  token: "GZWOPiXiR5skK1GfBKg8HpSoaDzylYGwUfKCiNab"
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea-runner
+  namespace: gitea
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitea-runner
+  template:
+    metadata:
+      labels:
+        app: gitea-runner
+    spec:
+      containers:
+        - name: runner
+          image: registry.local:5000/act_runner:latest
+          env:
+            - name: GITEA_INSTANCE_URL
+              # Use the service ClusterIP
+              value: "http://10.43.244.118:3000"
+            - name: GITEA_RUNNER_REGISTRATION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gitea-token
+                  key: token
+            - name: GITEA_RUNNER_NAME
+              value: "gitea-runner"
+            - name: GITEA_RUNNER_LABELS
+              value: "self-hosted,ubuntu-latest"
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
