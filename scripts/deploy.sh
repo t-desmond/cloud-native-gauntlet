@@ -1,17 +1,23 @@
 #!/bin/bash
 
-# Cloud Native Gauntlet - Deploy Script
-# Deploys applications to a K3s cluster via SSH to master VM
+# Cloud Native Gauntlet - GitOps Deploy Script
+# Deploys Gitea and ArgoCD to a K3s cluster via SSH to master VM
+# ArgoCD will then manage the deployment of all other components
 
 set -e
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 NC='\033[0m'
 
 print_status() {
     echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+print_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
 print_error() {
@@ -43,197 +49,257 @@ check_ssh_access() {
     }
 }
 
-# Configure /etc/hosts for task-api.local and keycloak.local
+# Configure /etc/hosts for local services
 configure_hosts_file() {
     local MASTER_IP
     MASTER_IP=$(get_master_ip)
-    print_status "Configuring /etc/hosts for task-api.local and keycloak.local..."
+    print_status "Configuring /etc/hosts entries for all services"
 
-    # Check if task-api.local exists in /etc/hosts
-    if grep -q "task-api.local" /etc/hosts; then
-        if [[ "$(uname)" == "Darwin" ]]; then
-            sudo sed -i '' "s/.*task-api.local/$MASTER_IP task-api.local keycloak.local/" /etc/hosts
+    # All services that will eventually be deployed via ArgoCD
+    local HOSTS=(
+        "task-api.local"      # Backend API
+        "keycloak.local"      # Authentication service
+        "gitea.local"         # Git repository and CI/CD
+        "argocd.local"        # GitOps deployment tool
+        "linkerd.local"       # Service mesh dashboard
+        "grafana.linkerd.local"   # Observability
+        "prometheus.linkerd.local" # Monitoring
+    )
+
+    for host in "${HOSTS[@]}"; do
+        if grep -qE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+$host\$" /etc/hosts; then
+            # Entry exists → check if IP matches
+            current_ip=$(grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+$host\$" /etc/hosts | awk '{print $1}')
+            if [[ "$current_ip" != "$MASTER_IP" ]]; then
+                print_status "Updating $host to point to $MASTER_IP"
+                # Cross-platform sed: create temp file and replace atomically
+                temp_file=$(mktemp)
+                sudo sed "s/^.*[[:space:]]$host\$/$MASTER_IP $host/" /etc/hosts > "$temp_file"
+                sudo mv "$temp_file" /etc/hosts
+            else
+                print_status "$host already points to $MASTER_IP (no change needed)"
+            fi
         else
-            sudo sed -i "s/.*task-api.local/$MASTER_IP task-api.local keycloak.local/" /etc/hosts
+            # Entry missing → add it
+            print_status "Adding $host → $MASTER_IP"
+            echo "$MASTER_IP $host" | sudo tee -a /etc/hosts >/dev/null
         fi
-    else
-        # Add both task-api.local and keycloak.local to /etc/hosts
-        echo "$MASTER_IP task-api.local keycloak.local" | sudo tee -a /etc/hosts >/dev/null
+    done
+}
+
+# Execute kubectl on master VM
+run_kubectl() {
+    local MASTER_IP=$(get_master_ip)
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "export KUBECONFIG=/home/ubuntu/.kube/config; $1"
+}
+
+# Wait for deployments in namespace
+wait_for_deployments() {
+    local ns="$1"
+    print_status "Waiting for deployments in namespace '$ns'..."
+    run_kubectl "kubectl -n $ns wait --for=condition=available deployment --all --timeout=300s 2>/dev/null || true"
+}
+
+# Deploy CNPG Operator
+deploy_cnpg_operator() {
+    print_status "Deploying CNPG Operator..."
+    run_kubectl "kubectl apply --server-side -f /home/ubuntu/projects/apps/database/operator.yaml"
+    run_kubectl "kubectl wait --for=condition=Available deployment/cnpg-controller-manager -n cnpg-system --timeout=300s"
+}
+
+# Deploy Gitea
+deploy_gitea() {
+    print_status "Deploying Gitea..."
+    local gitea_dir="/home/ubuntu/projects/apps/gitops/gitea"
+    
+    run_kubectl "kubectl apply -f $gitea_dir/namespace.yaml"
+    run_kubectl "kubectl apply -f $gitea_dir/db-bootstrap.yaml"
+    wait_for_deployments "gitea"
+    
+    run_kubectl "kubectl apply -f $gitea_dir/pvc.yaml -f $gitea_dir/secret.yaml -f $gitea_dir/deployment.yaml -f $gitea_dir/service.yaml"
+    wait_for_deployments "gitea"
+    
+    run_kubectl "kubectl apply -f $gitea_dir/ingress.yaml"
+}
+
+# Update runner manifest with Gitea service IP
+update_runner_service_ip() {
+    print_status "Updating runner manifest with Gitea service IP..."
+    local gitea_service_ip
+    gitea_service_ip=$(run_kubectl "kubectl -n gitea get svc gitea -o jsonpath='{.spec.clusterIP}'")
+    
+    if [[ -z "$gitea_service_ip" ]]; then
+        print_error "Could not get Gitea service IP"
+        return 1
     fi
-}
-
-# Execute kubectl command on master VM with proper kubeconfig
-run_kubectl_on_master() {
-    local MASTER_IP
-    MASTER_IP=$(get_master_ip)
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP \
-        "kubectl --kubeconfig /home/ubuntu/.kube/config $1"
-}
-
-# Deploy database components (CNPG)
-deploy_database() {
-    print_status "Deploying database components..."
-    local MASTER_IP
-    MASTER_IP=$(get_master_ip)
-
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "
+    
+    print_status "Gitea service IP: $gitea_service_ip"
+    
+    local MASTER_IP=$(get_master_ip)
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP '
         export KUBECONFIG=/home/ubuntu/.kube/config
-
-        # Create namespace
-        kubectl create namespace database --dry-run=client -o yaml | kubectl apply -f -
-
-        # Apply CNPG operator manifests
-        kubectl delete -f /home/ubuntu/projects/apps/database/cnpg-1.27.0.yaml --ignore-not-found
-        kubectl apply --server-side -f /home/ubuntu/projects/apps/database/cnpg-1.27.0.yaml
-
-        # Wait for CNPG operator deployment to be ready
-        kubectl -n cnpg-system wait --for=condition=available --timeout=180s deployment/cnpg-controller-manager
-    "
-
-    # Apply secrets and CNPG Cluster
-    local manifests=(
-        "/home/ubuntu/projects/apps/database/db-secret.yaml"
-        "/home/ubuntu/projects/apps/database/cluster-app.yaml"
-    )
-
-    for manifest in "${manifests[@]}"; do
-        print_status "Deleting existing $(basename $manifest)..."
-        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f $manifest --ignore-not-found"
-        print_status "Applying $(basename $manifest)..."
-        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f $manifest"
-    done
-
-    print_status "Waiting for CNPG cluster to be ready..."
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config wait --for=condition=ready --timeout=300s cluster/cluster-app -n database"
+        runner_manifest="/home/ubuntu/projects/apps/gitops/gitea/runner.yaml"
+        gitea_ip="'"$gitea_service_ip"'"
+        
+        temp_file=$(mktemp)
+        sed "s|http://[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*:3000|http://$gitea_ip:3000|g" "$runner_manifest" > "$temp_file"
+        mv "$temp_file" "$runner_manifest"
+        
+        echo "Updated GITEA_INSTANCE_URL to http://$gitea_ip:3000"
+    '
 }
 
-# Deploy backend components
-deploy_backend() {
-    print_status "Deploying backend components..."
-    local MASTER_IP
-    MASTER_IP=$(get_master_ip)
-
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "
+# Setup Gitea runner
+setup_gitea_runner() {
+    print_status "Setting up Gitea runner..."
+    echo ""
+    print_warn "Visit http://gitea.local → Admin Panel → Actions → Runners → Create new runner"
+    echo ""
+    
+    read -sp "Enter Gitea runner registration token: " runner_token
+    echo ""
+    
+    if [[ -z "$runner_token" ]]; then
+        print_warn "No token provided. Skipping runner setup."
+        return
+    fi
+    
+    # Update runner manifest with current service IP
+    update_runner_service_ip
+    
+    local MASTER_IP=$(get_master_ip)
+    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP '
         export KUBECONFIG=/home/ubuntu/.kube/config
-        kubectl create namespace backend --dry-run=client -o yaml | kubectl apply -f -
-    "
-
-    local manifests=(
-        "/home/ubuntu/projects/apps/backend/task-api-secret.yaml"
-        "/home/ubuntu/projects/apps/backend/task-api-configmap.yaml"
-        "/home/ubuntu/projects/apps/backend/task-api-deployment.yaml"
-        "/home/ubuntu/projects/apps/backend/task-api-service.yaml"
-        "/home/ubuntu/projects/apps/backend/task-api-ingress.yaml"
-    )
-
-    for manifest in "${manifests[@]}"; do
-        print_status "Deleting existing $(basename $manifest)..."
-        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f $manifest --ignore-not-found"
-        print_status "Applying $(basename $manifest)..."
-        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f $manifest"
-    done
-
-    print_status "Waiting for backend deployment to be ready..."
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config wait --for=condition=available --timeout=300s deployment/task-api -n backend"
+        runner_manifest="/home/ubuntu/projects/apps/gitops/gitea/runner.yaml"
+        runner_token="'"$runner_token"'"
+        
+        temp_file=$(mktemp)
+        sed "s|token: \"[^\"]*\"|token: \"$runner_token\"|g" "$runner_manifest" > "$temp_file"
+        mv "$temp_file" "$runner_manifest"
+        kubectl apply -f "$runner_manifest"
+    '
 }
 
-# Deploy auth components (Keycloak)
-deploy_auth() {
-    print_status "Deploying Keycloak (auth components)..."
-    local MASTER_IP
-    MASTER_IP=$(get_master_ip)
-
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "
-        export KUBECONFIG=/home/ubuntu/.kube/config
-        kubectl create namespace keycloak --dry-run=client -o yaml | kubectl apply -f -
-    "
-
-    # Secrets and ConfigMap
-    local pre_manifests=(
-        "/home/ubuntu/projects/apps/auth/keycloak-secret.yaml"
-        "/home/ubuntu/projects/apps/auth/keycloak-configmap.yaml"
-    )
-
-    for manifest in "${pre_manifests[@]}"; do
-        print_status "Deleting existing $(basename $manifest)..."
-        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f $manifest --ignore-not-found"
-        print_status "Applying $(basename $manifest)..."
-        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f $manifest"
-    done
-
-    # Keycloak deployment
-    print_status "Deploying Keycloak deployment..."
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f /home/ubuntu/projects/apps/auth/keycloak-deployment.yaml --ignore-not-found"
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f /home/ubuntu/projects/apps/auth/keycloak-deployment.yaml"
-
-    print_status "Waiting for Keycloak deployment to be ready..."
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config wait --for=condition=available --timeout=300s deployment/keycloak -n keycloak"
-
-    # Service and Ingress
-    local post_manifests=(
-        "/home/ubuntu/projects/apps/auth/keycloak-service.yaml"
-        "/home/ubuntu/projects/apps/auth/keycloak-ingress.yaml"
-    )
-
-    for manifest in "${post_manifests[@]}"; do
-        print_status "Deleting existing $(basename $manifest)..."
-        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config delete -f $manifest --ignore-not-found"
-        print_status "Applying $(basename $manifest)..."
-        ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config apply -f $manifest"
-    done
+# Deploy ArgoCD
+deploy_argocd() {
+    print_status "Deploying ArgoCD..."
+    local argocd_dir="/home/ubuntu/projects/apps/gitops/argocd"
+    
+    run_kubectl "kubectl apply -f $argocd_dir/namespace.yaml"
+    run_kubectl "kubectl apply -f $argocd_dir/install.yaml -f $argocd_dir/ingress.yaml -f $argocd_dir/configmap.yaml -n argocd"
+    wait_for_deployments "argocd"
 }
 
-# Show deployment status
+# Deploy ArgoCD Applications
+deploy_argocd_apps() {
+    print_status "Deploying ArgoCD Applications..."
+    local apps_dir="/home/ubuntu/projects/gitops/applications"
+    
+    run_kubectl "kubectl apply -f $apps_dir/linkerd-app.yaml -f $apps_dir/database-app.yaml -f $apps_dir/keycloak-app.yaml -f $apps_dir/task-api-app.yaml -n argocd"
+    run_kubectl "sleep 10; kubectl get applications -n argocd"
+}
+
+# Show deployment status and next steps
 show_deployment_status() {
-    local MASTER_IP
-    MASTER_IP=$(get_master_ip)
-    local REGISTRY_IP
-    REGISTRY_IP=$(get_registry_ip)
+    local MASTER_IP=$(get_master_ip)
+    local REGISTRY_IP=$(get_registry_ip)
 
-    print_status "Deployment completed successfully!"
-    echo -e "\nAccess Information:"
-    echo "=================="
-    echo "Backend API: http://task-api.local/api"
-    echo "Health Check: http://task-api.local/api/health"
-    echo "Database Port Forward: kubectl port-forward svc/cluster-app-rw 5432:5432 -n database"
-    echo "Registry: $REGISTRY_IP:5000"
-    echo "Keycloak: http://keycloak.local/auth"
-
-    echo -e "\nPods:"
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config get pods --all-namespaces"
-
-    echo -e "\nServices:"
-    ssh -o StrictHostKeyChecking=no ubuntu@$MASTER_IP "kubectl --kubeconfig /home/ubuntu/.kube/config get services --all-namespaces"
-
-    echo "Database:"
-    echo "- Port Forward: kubectl port-forward svc/cluster-app-rw 5432:5432 -n database"
-    echo "- Connection: psql -U admin -d database -h localhost"
-
+    print_status "GitOps foundation deployment completed successfully!"
     echo ""
-    echo "API Testing Examples:"
-    echo "- Login: curl -X POST http://task-api.local/api/auth/login \\"
-    echo "  -H \"Content-Type: application/json\" \\"
-    echo "  -d '{\"email\": \"admin@example.com\", \"password\": \"adminpassword\"}'"
-
+    echo "=========================================="
+    echo "           Access Information"
+    echo "=========================================="
     echo ""
-    echo "Keycloak Testing:"
-    echo "- Admin Console: http://keycloak.local/"
-    echo "- Default credentials: (check keycloak-secret.yaml)"
+    echo "🔧 GitOps Tools:"
+    echo "   Gitea:  http://gitea.local"
+    echo "   ArgoCD: http://argocd.local"
+    echo ""
+    echo "🏗️  Infrastructure:"
+    echo "   Registry: $REGISTRY_IP:5000"
+    echo "   Master VM: $MASTER_IP"
+    echo ""
+    echo "🚀 ArgoCD Managed Services:"
+    echo "   • Linkerd Service Mesh (observability & security)"
+    echo "   • PostgreSQL Database (CNPG operator)"
+    echo "   • Keycloak Identity Provider: http://keycloak.local"
+    echo "   • Task API Backend: http://task-api.local/api"
+    echo ""
+    echo "📊 Observability Stack:"
+    echo "   • Linkerd Dashboard: http://linkerd.local"
+    echo "   • Grafana: http://grafana.linkerd.local"
+    echo "   • Prometheus: http://prometheus.linkerd.local"
+    echo ""
+    echo "=========================================="
+    echo "               Current Status"
+    echo "=========================================="
+    
+    echo ""
+    print_status "Gitea Pods:"
+    run_kubectl "kubectl get pods -n gitea"
+    
+    echo ""
+    print_status "ArgoCD Pods:"
+    run_kubectl "kubectl get pods -n argocd"
+    
+    echo ""
+    echo "=========================================="
+    echo "               Next Steps"
+    echo "=========================================="
+    echo ""
+    echo "1. 📁 Set up your application manifests in Gitea repositories"
+    echo "2. 🔄 Configure ArgoCD applications to sync from Gitea"
+    echo "3. 🚀 Deploy your services via GitOps workflow"
+    echo ""
+    echo "📚 Component Information:"
+    echo "   • Database: CNPG PostgreSQL operator and cluster"
+    echo "   • Backend: Rust-based task API with JWT authentication"
+    echo "   • Auth: Keycloak for identity and access management"
+    echo "   • Mesh: Linkerd service mesh for observability"
+    echo "   • Monitoring: Prometheus and Grafana stack"
+    echo ""
+    echo "🔧 Useful Commands:"
+    echo "   kubectl --kubeconfig ~/.kube/config get pods --all-namespaces"
+    echo "   kubectl -n gitea port-forward svc/gitea 3000:3000"
+    echo "   kubectl -n argocd port-forward svc/argocd-server 8080:443"
+    echo ""
+    echo "🔐 ArgoCD Initial Password:"
+    echo "   kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d"
 }
 
 # Main execution
 main() {
-    echo "=========================================="
-    echo "   Cloud Native Gauntlet Deploy Script"
-    echo "=========================================="
+    echo "=============================================="
+    echo "   Cloud Native Gauntlet - GitOps Deploy"
+    echo "=============================================="
     echo ""
+    echo "This script deploys the GitOps foundation:"
+    echo "• Gitea (Git repository and CI/CD)"
+    echo "• ArgoCD (GitOps deployment tool)"
+    echo ""
+    echo "All other components will be managed by ArgoCD."
+    echo ""
+    
     check_ssh_access
     configure_hosts_file
-    deploy_database
-    deploy_backend
-    deploy_auth
+    deploy_cnpg_operator
+    deploy_gitea
+    
+    echo ""
+    read -p "Do you want to set up the Gitea runner now? (y/N): " setup_runner
+    if [[ "$setup_runner" =~ ^[Yy]$ ]]; then
+        setup_gitea_runner
+    else
+        print_warn "Skipping runner setup. You can run this later if needed."
+    fi
+    
+    deploy_argocd
+    deploy_argocd_apps
+    
     show_deployment_status
-    print_status "Deployment completed!"
+    
+    echo ""
+    print_status "GitOps foundation deployment completed!"
+    print_status "Your cluster is now ready for GitOps-managed deployments."
 }
 
 main "$@"

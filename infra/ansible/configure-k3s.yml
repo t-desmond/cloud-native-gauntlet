@@ -71,6 +71,59 @@
         state: present
         insertafter: EOF
 
+    # -------------------- Linkerd Tasks --------------------
+
+    - name: Create Linkerd CLI directory
+      become: true
+      become_user: ubuntu
+      file:
+        path: /home/ubuntu/.linkerd2/bin
+        state: directory
+        mode: '0755'
+
+    - name: Download Linkerd CLI binary
+      become: true
+      become_user: ubuntu
+      get_url:
+        url: https://github.com/linkerd/linkerd2/releases/download/edge-25.9.1/linkerd2-cli-edge-25.9.1-linux-amd64
+        dest: /home/ubuntu/.linkerd2/bin/linkerd
+        mode: '0755'
+        timeout: 30
+      retries: 3
+      delay: 5
+
+
+
+    - name: Ensure Linkerd CLI is on user's PATH
+      lineinfile:
+        path: /home/ubuntu/.bashrc
+        line: 'export PATH=$HOME/.linkerd2/bin:$PATH'
+        create: yes
+        state: present
+        insertafter: EOF
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: Verify Linkerd CLI installation
+      become: true
+      become_user: ubuntu
+      shell: "$HOME/.linkerd2/bin/linkerd version"
+      register: linkerd_version
+      changed_when: false
+
+
+    - name: Pre-installation check for Linkerd (--pre)
+      become_user: ubuntu
+      shell: "$HOME/.linkerd2/bin/linkerd check --pre"
+      register: linkerd_precheck
+      changed_when: false
+      failed_when: linkerd_precheck.rc != 0
+
+    - name: Debug pre-installation check output
+      debug:
+        msg: "{{ linkerd_precheck.stdout }}"
+
 # -------------------- Worker Setup --------------------
 - name: Configure K3s worker nodes
   hosts: workers
